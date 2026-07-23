@@ -32,7 +32,10 @@ export function CustomerSearch({
   });
 
   useEffect(() => {
-    if (!value && selected) setSelected(null);
+    if (!value) {
+      setSelected(null);
+      setQuery('');
+    }
   }, [value]);
 
   useEffect(() => {

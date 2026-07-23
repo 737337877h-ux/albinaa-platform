@@ -15,10 +15,6 @@ interface Branch {
   name: string;
 }
 
-interface BranchesResponse {
-  items: Branch[];
-}
-
 const CUSTOMER_TYPES = [
   { value: 'retail', label: 'تجزئة' },
   { value: 'wholesale', label: 'جملة' },
@@ -46,7 +42,7 @@ export default function NewCustomerPage() {
 
   const branches = useQuery({
     queryKey: ['branches'],
-    queryFn: () => api<BranchesResponse>('/branches'),
+    queryFn: () => api<Branch[]>('/branches'),
   });
 
   const createMutation = useMutation({
@@ -227,7 +223,7 @@ export default function NewCustomerPage() {
               <Field label="الفرع" hint="اختياري">
                 <Select value={branchId} onChange={(e) => setBranchId(e.target.value)}>
                   <option value="">بدون فرع</option>
-                  {(branches.data?.items ?? []).map((b) => (
+                  {(branches.data ?? []).map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </Select>
