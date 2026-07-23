@@ -12,6 +12,7 @@ import { DataState, PermissionNotice } from '@/components/ui/data-state';
 import { Table, THead, TRow, TD } from '@/components/ui/table';
 import { Dialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
+import { CustomerSearch } from '@/components/customer-search';
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 interface Customer { id: string; name: string; externalCustomerCode: string; }
@@ -126,12 +127,12 @@ export default function PromisesPage() {
 
       <Card className="p-4">
         <div className="flex flex-wrap items-end gap-3">
-          <Field label="رقم العميل">
-            <Input
-              placeholder="معرف العميل…"
+          <Field label="العميل">
+            <CustomerSearch
               value={filters.customerId}
-              onChange={(e) => { setFilters((f) => ({ ...f, customerId: e.target.value })); setPage(1); }}
-              className="w-48"
+              onChange={(id) => { setFilters((f) => ({ ...f, customerId: id })); setPage(1); }}
+              placeholder="بحث باسم العميل…"
+              className="w-56"
             />
           </Field>
           <Field label="الحالة">
@@ -308,10 +309,10 @@ function PromiseFormDialog({ initial, onClose }: { initial?: PromiseItem; onClos
       <div className="space-y-4">
         {!isEdit && (
           <Field label="العميل" error={!customerId && mutation.isError ? 'إلزامي' : undefined}>
-            <Input
-              placeholder="معرف العميل (UUID)"
+            <CustomerSearch
               value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
+              onChange={setCustomerId}
+              placeholder="ابحث عن العميل…"
             />
           </Field>
         )}

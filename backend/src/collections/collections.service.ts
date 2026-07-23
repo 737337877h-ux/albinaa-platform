@@ -28,6 +28,14 @@ export class CollectionsService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  async findMethods(user: AuthUser) {
+    return this.prisma.collectionMethod.findMany({
+      where: { organizationId: user.organizationId, active: true },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   private async collectorOf(user: AuthUser) {
     return this.prisma.collector.findUnique({ where: { userId: user.id } });
   }

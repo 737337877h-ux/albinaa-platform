@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { CustomerSearch } from '@/components/customer-search';
 
 interface CollectionItem {
   id: string;
@@ -49,7 +50,7 @@ const registerSchema = z.object({
   customerId: z.string().min(1, 'اختر العميل'),
   amount: z.coerce.number().positive('المبلغ يجب أن يكون أكبر من صفر'),
   currencyCode: z.string().min(1, 'اختر العملة'),
-  methodCode: z.string().min(1, 'اختر طريقة الدفع'),
+  methodId: z.string().min(1, 'اختر طريقة الدفع'),
   notes: z.string().optional(),
 });
 
@@ -59,12 +60,6 @@ const reverseSchema = z.object({ reason: z.string().min(1, 'أدخل سبب ال
 type ReverseForm = z.infer<typeof reverseSchema>;
 
 const CURRENCIES = ['USD', 'YER', 'SAR'];
-const METHODS = [
-  { value: 'cash', label: 'نقدي' },
-  { value: 'transfer', label: 'تحويل بنكي' },
-  { value: 'check', label: 'شيك' },
-  { value: 'other', label: 'أخرى' },
-];
 
 export default function CollectionsPage() {
   const can = useCan();
@@ -136,11 +131,11 @@ export default function CollectionsPage() {
       <Card className="p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-1">
-            <label className="mb-1 block text-xs text-concrete-500">رقم العميل</label>
-            <Input
-              placeholder="بحث برقم العميل…"
+            <label className="mb-1 block text-xs text-concrete-500">العميل</label>
+            <CustomerSearch
               value={customerId}
-              onChange={(e) => { setCustomerId(e.target.value); setPage(1); }}
+              onChange={(id) => { setCustomerId(id); setPage(1); }}
+              placeholder="بحث باسم العميل أو الكود…"
             />
           </div>
           <div className="min-w-[10rem]">
@@ -249,9 +244,16 @@ export default function CollectionsPage() {
 
 function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
-  const { register, handleSubmit, formState: { errors }, reset } = useForm<RegisterForm>({
+  const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
-    defaultValues: { customerId: '', amount: 0, currencyCode: '', methodCode: '', notes: '' },
+    defaultValues: { customerId: '', amount: 0, currencyCode: '', methodId: '', notes: '' },
+  });
+  const watchCustomerId = watch('customerId');
+
+  const methods = useQuery({
+    queryKey: ['collection-methods'],
+    queryFn: () => api<{ id: string; name: string }[]>('/collections/methods'),
+    enabled: open,
   });
 
   const mutation = useMutation({
@@ -268,8 +270,13 @@ function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void 
   return (
     <Dialog open={open} onClose={onClose} title="تسجيل تحصيل جديد">
       <form onSubmit={handleSubmit((d) => mutation.mutate(d))} className="space-y-4">
-        <Field label="رقم العميل" error={errors.customerId?.message}>
-          <Input {...register('customerId')} placeholder="أدخل رقم العميل" />
+        <Field label="العميل" error={errors.customerId?.message}>
+          <input type="hidden" {...register('customerId')} />
+          <CustomerSearch
+            value={watchCustomerId}
+            onChange={(id) => setValue('customerId', id, { shouldValidate: true })}
+            placeholder="ابحث عن العميل…"
+          />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="المبلغ" error={errors.amount?.message}>
@@ -282,10 +289,10 @@ function RegisterDialog({ open, onClose }: { open: boolean; onClose: () => void 
             </Select>
           </Field>
         </div>
-        <Field label="طريقة الدفع" error={errors.methodCode?.message}>
-          <Select {...register('methodCode')}>
+        <Field label="طريقة الدفع" error={errors.methodId?.message}>
+          <Select {...register('methodId')}>
             <option value="">اختر</option>
-            {METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+            {(methods.data ?? []).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </Select>
         </Field>
         <Field label="ملاحظات" hint="اختياري">
