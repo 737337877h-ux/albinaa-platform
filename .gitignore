@@ -17,3 +17,27 @@ uploads/
 DockerData/
 
 *.zip
+# Environment
+.env
+.env.*
+
+!.env.example
+
+# Node
+node_modules/
+.next/
+dist/
+
+# TypeScript
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
