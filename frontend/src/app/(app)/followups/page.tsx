@@ -11,6 +11,7 @@ import { DataState, PermissionNotice } from '@/components/ui/data-state';
 import { Table, THead, TRow, TD } from '@/components/ui/table';
 import { Dialog } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
+import { CustomerSearch } from '@/components/customer-search';
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 interface FollowupType { id: string; name: string; }
@@ -149,17 +150,17 @@ export default function FollowupsPage() {
               onChange={(e) => { setFilters((f) => ({ ...f, toDate: e.target.value })); setPage(1); }}
             />
           </Field>
-          <Field label="رقم العميل">
-            <Input
-              placeholder="معرف العميل…"
+          <Field label="العميل">
+            <CustomerSearch
               value={filters.customerId}
-              onChange={(e) => { setFilters((f) => ({ ...f, customerId: e.target.value })); setPage(1); }}
-              className="w-48"
+              onChange={(id) => { setFilters((f) => ({ ...f, customerId: id })); setPage(1); }}
+              placeholder="بحث باسم العميل…"
+              className="w-56"
             />
           </Field>
-          <Field label="معرف المحصل">
+          <Field label="المحصل">
             <Input
-              placeholder="معرف المستخدم…"
+              placeholder="معرف المحصل…"
               value={filters.collectorId}
               onChange={(e) => { setFilters((f) => ({ ...f, collectorId: e.target.value })); setPage(1); }}
               className="w-48"
@@ -350,10 +351,10 @@ function FollowupFormDialog({
       <div className="space-y-4">
         {!isEdit && (
           <Field label="العميل" error={!customerId && mutation.isError ? 'إلزامي' : undefined}>
-            <Input
-              placeholder="معرف العميل (UUID)"
+            <CustomerSearch
               value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
+              onChange={setCustomerId}
+              placeholder="ابحث عن العميل…"
               disabled={isEdit}
             />
           </Field>

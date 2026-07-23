@@ -33,6 +33,13 @@ export class CollectionsController {
     return this.collections.findAll(user, q);
   }
 
+  @Get('methods')
+  @RequirePermissions('customers.read')
+  @ApiOperation({ summary: 'طرق الدفع المتاحة للمنشأة' })
+  findMethods(@CurrentUser() user: AuthUser) {
+    return this.collections.findMethods(user);
+  }
+
   @Get(':id')
   @RequirePermissions('customers.read')
   @ApiOperation({ summary: 'تفاصيل عملية تحصيل (مع سجل العكس إن وجد)' })
