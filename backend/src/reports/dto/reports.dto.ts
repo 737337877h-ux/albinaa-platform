@@ -36,15 +36,7 @@ export class CollectionsQueryDto extends ReportFiltersDto {
 
 export class AgingQueryDto extends ReportFiltersDto {}
 
-export class CollectorsPerformanceQueryDto {
-  @ApiPropertyOptional({ description: 'من تاريخ (ISO Date)' })
-  @IsOptional() @IsDateString()
-  from?: string;
-
-  @ApiPropertyOptional({ description: 'إلى تاريخ (ISO Date)' })
-  @IsOptional() @IsDateString()
-  to?: string;
-
+export class CollectorsPerformanceQueryDto extends ReportFiltersDto {
   @ApiPropertyOptional({ description: 'صفحة النتائج', default: 1 })
   @IsOptional() @Type(() => Number) @Min(1) @Max(100)
   page?: number;
@@ -52,6 +44,18 @@ export class CollectorsPerformanceQueryDto {
   @ApiPropertyOptional({ description: 'عدد العناصر لكل صفحة', default: 25, maximum: 100 })
   @IsOptional() @Type(() => Number) @Min(1) @Max(100)
   limit?: number;
+
+  @ApiPropertyOptional({ enum: ['collector_name', 'customers', 'today', 'week', 'month', 'collections_count', 'outstanding_balance', 'fulfillment_rate', 'collection_rate'], default: 'month' })
+  @IsOptional() @IsIn(['collector_name', 'customers', 'today', 'week', 'month', 'collections_count', 'outstanding_balance', 'fulfillment_rate', 'collection_rate'])
+  sortBy?: string;
+
+  @ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'desc' })
+  @IsOptional() @IsIn(['asc', 'desc'])
+  sortDir?: 'asc' | 'desc';
+
+  @ApiPropertyOptional({ enum: ['active', 'inactive', 'all'], default: 'active', description: 'حالة المحصل' })
+  @IsOptional() @IsIn(['active', 'inactive', 'all'])
+  collectorStatus?: 'active' | 'inactive' | 'all';
 }
 
 export class AgingDetailQueryDto extends ReportFiltersDto {

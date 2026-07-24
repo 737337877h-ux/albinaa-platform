@@ -279,7 +279,11 @@ export default function ReportsPage() {
 
       <div className="grid gap-5 xl:grid-cols-2">
         <Card>
-          <CardHeader title="أداء المحصلين" />
+          <CardHeader title="أداء المحصلين" action={
+            <Link href="/reports/collectors">
+              <Button variant="ghost" className="text-xs">عرض التفصيل</Button>
+            </Link>
+          } />
           <div className="p-4">
             <DataState isLoading={topCollectors.isLoading} isError={topCollectors.isError} error={topCollectors.error}
               isEmpty={!topCollectors.data?.length} emptyTitle="لا محصلين" skeletonClassName="h-48">

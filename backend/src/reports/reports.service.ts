@@ -542,35 +542,77 @@ export class ReportsService {
   }
 
   async collectorsPerformance(user: AuthUser, query: CollectorsPerformanceQueryDto) {
-    const orgId = user.organizationId;
-    const endDate = query.to ? new Date(query.to) : new Date();
-    const startDate = query.from ? new Date(query.from) : new Date(endDate.getFullYear(), endDate.getMonth() - 2, 1);
+    if (query.from && query.to && new Date(query.from) > new Date(query.to)) {
+      throw new BadRequestException('تاريخ البداية يجب أن يكون قبل تاريخ النهاية');
+    }
 
-    const rows = await this.prisma.$queryRaw<Array<{
-      collector_id: string; collector: string; customer_count: bigint;
-      today_collected: Decimal; month_collected: Decimal;
-      followup_count: bigint; promise_count: bigint; fulfilled_count: bigint;
-    }>>`
+    const orgId = user.organizationId;
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 25;
+    const offset = (page - 1) * limit;
+    const sortBy = query.sortBy ?? 'month';
+    const sortDir = query.sortDir ?? 'desc';
+    const collectorStatus = query.collectorStatus ?? 'active';
+
+    const toRaw = query.to ?? new Date().toISOString().slice(0, 10);
+    const fromRaw = query.from ?? new Date(new Date(toRaw).getFullYear(), new Date(toRaw).getMonth() - 2, 1).toISOString().slice(0, 10);
+    const startDate = new Date(fromRaw);
+    const endDateInclusive = new Date(toRaw);
+    const endExclusive = new Date(toRaw); endExclusive.setDate(endExclusive.getDate() + 1);
+    const weekStart = (() => { const d = new Date(); const day = d.getDay(); const diff = d.getDate() - day + (day === 0 ? -6 : 1); return new Date(d.setDate(diff)); })();
+    const todayEnd = new Date(); todayEnd.setHours(0, 0, 0, 0); todayEnd.setDate(todayEnd.getDate() + 1);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+
+    const collectorWhere: Prisma.Sql[] = [
+      Prisma.sql`AND u.organization_id = CAST(${orgId} AS uuid)`,
+    ];
+    if (collectorStatus === 'active') {
+      collectorWhere.push(Prisma.sql`AND col.active = true`);
+    } else if (collectorStatus === 'inactive') {
+      collectorWhere.push(Prisma.sql`AND col.active = false`);
+    }
+    if (query.branchId) {
+      collectorWhere.push(Prisma.sql`AND col.branch_id = CAST(${query.branchId} AS uuid)`);
+    }
+    if (query.collectorId) {
+      collectorWhere.push(Prisma.sql`AND col.id = CAST(${query.collectorId} AS uuid)`);
+    }
+
+    const sortColMap: Record<string, string> = {
+      collector_name: 'collector',
+      customers: 'customer_count',
+      today: 'today_collected',
+      week: 'week_collected',
+      month: 'month_collected',
+      collections_count: 'collections_count',
+      outstanding_balance: 'outstanding_balance',
+      fulfillment_rate: 'fulfillment_rate',
+      collection_rate: 'collection_rate',
+    };
+    const sortCol = sortColMap[sortBy] ?? 'month_collected';
+    const sortDirStr = sortDir === 'asc' ? 'ASC' : 'DESC';
+
+    const baseQuery = Prisma.sql`
       WITH collector_stats AS (
         SELECT col.id AS collector_id, u.full_name AS collector,
                COUNT(DISTINCT ca.customer_id) AS customer_count
           FROM collectors col
           JOIN users u ON u.id = col.user_id
           LEFT JOIN customer_assignments ca ON ca.collector_id = col.id AND ca.effective_to IS NULL
-         WHERE col.active = true
-           AND u.organization_id = CAST(${orgId} AS uuid)
+         WHERE 1=1 ${this.sqlJoin(collectorWhere)}
          GROUP BY col.id, u.full_name
       ),
       collection_stats AS (
         SELECT c.collector_id,
-               COALESCE(SUM(CASE WHEN c.collected_at >= CURRENT_DATE THEN c.amount ELSE 0 END), 0) AS today_collected,
-               COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} THEN c.amount ELSE 0 END), 0) AS month_collected
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(CURRENT_DATE, ${startDate}) AND c.collected_at < LEAST(${todayEnd}, ${endExclusive}) THEN c.amount ELSE 0 END), 0) AS today_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(${weekStart}, ${startDate}) AND c.collected_at < LEAST(${weekEnd}, ${endExclusive}) THEN c.amount ELSE 0 END), 0) AS week_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} AND c.collected_at < ${endExclusive} THEN c.amount ELSE 0 END), 0) AS month_collected,
+               COUNT(*) FILTER (WHERE c.collected_at >= ${startDate} AND c.collected_at < ${endExclusive}) AS collections_count
           FROM collections c
           JOIN customers cust ON cust.id = c.customer_id
          WHERE cust.organization_id = CAST(${orgId} AS uuid)
            AND c.status <> 'reversed'
-           AND c.collected_at >= ${startDate}
-           AND c.collected_at <= ${endDate}
+           AND c.collected_at < ${endExclusive}
          GROUP BY c.collector_id
       ),
       promise_stats AS (
@@ -580,6 +622,7 @@ export class ReportsService {
           FROM payment_promises p
           JOIN customers cust ON cust.id = p.customer_id
          WHERE cust.organization_id = CAST(${orgId} AS uuid)
+           AND p.promise_date >= ${startDate} AND p.promise_date <= ${endDateInclusive}
          GROUP BY p.collector_id
       ),
       followup_stats AS (
@@ -588,33 +631,108 @@ export class ReportsService {
           FROM collectors col
           JOIN users u ON u.id = col.user_id
           LEFT JOIN followups f ON f.user_id = col.user_id AND f.deleted_at IS NULL
+           AND f.followup_at >= ${startDate} AND f.followup_at < ${endExclusive}
          WHERE u.organization_id = CAST(${orgId} AS uuid)
          GROUP BY col.id
+      ),
+      balance_stats AS (
+        SELECT ca.collector_id,
+               COALESCE(SUM(cb.accounting_balance), 0) AS outstanding_balance
+          FROM customer_assignments ca
+          JOIN customer_balances cb ON cb.customer_id = ca.customer_id AND cb.accounting_balance > 0
+         WHERE ca.effective_to IS NULL
+         GROUP BY ca.collector_id
+      ),
+      base AS (
+        SELECT cs.collector_id, cs.collector, cs.customer_count,
+               COALESCE(cst.today_collected, 0) AS today_collected,
+               COALESCE(cst.week_collected, 0) AS week_collected,
+               COALESCE(cst.month_collected, 0) AS month_collected,
+               COALESCE(cst.collections_count, 0) AS collections_count,
+               COALESCE(fs.followup_count, 0) AS followup_count,
+               COALESCE(ps.promise_count, 0) AS promise_count,
+               COALESCE(ps.fulfilled_count, 0) AS fulfilled_count,
+               COALESCE(bs.outstanding_balance, 0) AS outstanding_balance,
+               CASE WHEN COALESCE(ps.promise_count, 0) > 0
+                  THEN (COALESCE(ps.fulfilled_count, 0)::numeric / ps.promise_count * 100)
+                  ELSE 0 END AS fulfillment_rate,
+               CASE WHEN COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0) > 0
+                  THEN (COALESCE(cst.month_collected, 0)::numeric /
+                        NULLIF(COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0), 0) * 100)
+                  ELSE 0 END AS collection_rate
+          FROM collector_stats cs
+          LEFT JOIN collection_stats cst ON cst.collector_id = cs.collector_id
+          LEFT JOIN followup_stats fs ON fs.collector_id = cs.collector_id
+          LEFT JOIN promise_stats ps ON ps.collector_id = cs.collector_id
+          LEFT JOIN balance_stats bs ON bs.collector_id = cs.collector_id
       )
-      SELECT cs.collector_id, cs.collector, cs.customer_count,
-             COALESCE(cst.month_collected, 0) AS month_collected,
-             COALESCE(cst.today_collected, 0) AS today_collected,
-             COALESCE(fs.followup_count, 0) AS followup_count,
-             COALESCE(ps.promise_count, 0) AS promise_count,
-             COALESCE(ps.fulfilled_count, 0) AS fulfilled_count
-        FROM collector_stats cs
-        LEFT JOIN collection_stats cst ON cst.collector_id = cs.collector_id
-        LEFT JOIN followup_stats fs ON fs.collector_id = cs.collector_id
-        LEFT JOIN promise_stats ps ON ps.collector_id = cs.collector_id
-       ORDER BY month_collected DESC
+      SELECT * FROM base
     `;
 
-    return rows.map((r) => ({
-      collectorId: r.collector_id,
-      collector: r.collector,
-      customerCount: Number(r.customer_count),
-      monthCollected: toNumber(r.month_collected),
-      todayCollected: toNumber(r.today_collected),
-      followupCount: Number(r.followup_count),
-      promiseCount: Number(r.promise_count),
-      fulfilledCount: Number(r.fulfilled_count),
-      fulfillmentRate: Number(r.promise_count) > 0 ? (Number(r.fulfilled_count) / Number(r.promise_count)) * 100 : 0,
-    }));
+    const sortLimit = Prisma.raw(` ORDER BY ${sortCol} ${sortDirStr} NULLS LAST LIMIT ${limit} OFFSET ${offset}`);
+
+    const [items, countResult, summaryResult, topPerfResult] = await Promise.all([
+      this.prisma.$queryRaw<unknown[]>(Prisma.sql`${baseQuery} ${sortLimit}`),
+      this.prisma.$queryRaw<Array<{ count: bigint }>>(
+        Prisma.sql`SELECT COUNT(*) AS count FROM (${baseQuery}) _cnt`
+      ),
+      this.prisma.$queryRaw<Array<{
+        total_collectors: bigint; total_collected: Decimal;
+        avg_fulfillment: Decimal; total_customers: bigint;
+      }>>(Prisma.sql`
+        SELECT COUNT(*) AS total_collectors,
+               COALESCE(SUM(month_collected), 0) AS total_collected,
+               CASE WHEN SUM(CASE WHEN promise_count > 0 THEN 1 ELSE 0 END) > 0
+                 THEN SUM(fulfilled_count)::numeric / NULLIF(SUM(CASE WHEN promise_count > 0 THEN promise_count END), 0) * 100
+                 ELSE 0 END AS avg_fulfillment,
+               COALESCE(SUM(customer_count), 0) AS total_customers
+          FROM (${baseQuery}) _sum
+      `),
+      this.prisma.$queryRaw<Array<{ collector: string }>>(
+        Prisma.sql`SELECT collector FROM (${baseQuery}) _top
+          ORDER BY month_collected DESC, fulfillment_rate DESC, collector ASC LIMIT 1`
+      ),
+    ]);
+
+    const typed = items as Array<{
+      collector_id: string; collector: string; customer_count: bigint;
+      today_collected: Decimal; week_collected: Decimal; month_collected: Decimal;
+      collections_count: bigint; followup_count: bigint; promise_count: bigint;
+      fulfilled_count: bigint; outstanding_balance: Decimal;
+      fulfillment_rate: number; collection_rate: number;
+    }>;
+
+    const summaryRow = summaryResult[0];
+    const topPerformer = topPerfResult[0]?.collector ?? null;
+
+    return {
+      items: typed.map((r) => ({
+        collectorId: r.collector_id,
+        collector: r.collector,
+        customerCount: Number(r.customer_count),
+        todayCollected: toNumber(r.today_collected),
+        weekCollected: toNumber(r.week_collected),
+        monthCollected: toNumber(r.month_collected),
+        collectionsCount: Number(r.collections_count),
+        followupCount: Number(r.followup_count),
+        promiseCount: Number(r.promise_count),
+        fulfilledCount: Number(r.fulfilled_count),
+        outstandingBalance: toNumber(r.outstanding_balance),
+        fulfillmentRate: Number(r.fulfillment_rate ?? 0),
+        collectionRate: Number(r.collection_rate ?? 0),
+      })),
+      total: Number(countResult[0]?.count ?? 0),
+      page,
+      limit,
+      totalPages: Math.ceil(Number(countResult[0]?.count ?? 0) / limit),
+      summary: {
+        totalCollectors: Number(summaryRow?.total_collectors ?? 0),
+        totalCollected: toNumber(summaryRow?.total_collected ?? 0),
+        avgFulfillmentRate: Number(summaryRow?.avg_fulfillment ?? 0),
+        totalCustomers: Number(summaryRow?.total_customers ?? 0),
+        topPerformer,
+      },
+    };
   }
 
   async unfollowedCustomers(user: AuthUser, query: UnfollowedQueryDto) {

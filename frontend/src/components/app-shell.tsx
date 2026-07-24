@@ -19,6 +19,7 @@ const NAV = [
   { href: '/dashboard', label: 'لوحة التحكم', icon: LayoutDashboard, perm: 'reports.read' },
   { href: '/reports', label: 'التقارير', icon: BarChart3, perm: 'reports.executive' },
   { href: '/reports/aging', label: 'أعمار الديون', icon: Clock, perm: 'reports.executive' },
+  { href: '/reports/collectors', label: 'أداء المحصلين', icon: Users, perm: 'reports.executive' },
   { href: '/tasks', label: 'عمل اليوم', icon: ListTodo, perm: 'tasks.manage' },
   { href: '/customers', label: 'العملاء', icon: Users, perm: 'customers.read' },
   { href: '/followups', label: 'المتابعات', icon: PhoneCall, perm: 'customers.read' },
