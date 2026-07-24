@@ -7,7 +7,7 @@ import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement,
   Tooltip, Legend,
 } from 'chart.js';
-import { api } from '@/lib/api';
+import { api, downloadBlob } from '@/lib/api';
 import { useCan } from '@/lib/auth';
 import { CCY_AR, PROMISE_STATUS_AR } from '@/lib/format';
 import { PageHeader } from '@/components/app-shell';
@@ -124,6 +124,24 @@ export default function ReportsPage() {
   });
 
   const [unfollowedPage, setUnfollowedPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      await downloadBlob('/reports/export', {
+        report: 'executive',
+        format: 'xlsx',
+        ...(filters.from ? { from: filters.from } : {}),
+        ...(filters.to ? { to: filters.to } : {}),
+        ...(filters.branchId ? { branchId: filters.branchId } : {}),
+        ...(filters.currency ? { currency: filters.currency } : {}),
+        ...(filters.customerStatus !== 'all' ? { customerStatus: filters.customerStatus } : {}),
+      }, 'التقارير_التنفيذية.xlsx');
+    } finally {
+      setExporting(false);
+    }
+  }, [filters]);
 
   const unfollowed = useQuery({
     queryKey: ['r-unfollowed', fp, unfollowedPage],
@@ -193,6 +211,9 @@ export default function ReportsPage() {
           {hasFilters && (
             <Button variant="ghost" onClick={clearFilters}>مسح الفلاتر</Button>
           )}
+          <Button variant="secondary" onClick={handleExport} disabled={exporting} className="gap-2">
+            {exporting ? 'جاري التصدير...' : 'تصدير Excel'}
+          </Button>
         </div>
       </Card>
 

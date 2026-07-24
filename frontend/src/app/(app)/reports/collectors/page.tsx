@@ -3,7 +3,7 @@ import { useMemo, useState, useCallback } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, downloadBlob } from '@/lib/api';
 import { useCan } from '@/lib/auth';
 import { PageHeader } from '@/components/app-shell';
 import { Button, Card, CardHeader, Badge, Money, Skeleton } from '@/components/ui/primitives';
@@ -97,6 +97,24 @@ export default function CollectorsPerformancePage() {
   const filters = useMemo(() => readFilters(searchParams), [searchParams]);
   const fp = useMemo(() => buildParams(filters), [filters]);
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      await downloadBlob('/reports/export', {
+        report: 'collectors',
+        format: 'xlsx',
+        ...(filters.from ? { from: filters.from } : {}),
+        ...(filters.to ? { to: filters.to } : {}),
+        ...(filters.branchId ? { branchId: filters.branchId } : {}),
+        ...(filters.collectorId ? { collectorId: filters.collectorId } : {}),
+        ...(filters.collectorStatus ? { collectorStatus: filters.collectorStatus } : {}),
+      }, 'أداء_المحصلين.xlsx');
+    } finally {
+      setExporting(false);
+    }
+  }, [filters]);
 
   const setFilter = useCallback((key: keyof FilterState, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -235,7 +253,12 @@ export default function CollectorsPerformancePage() {
 
       <Card>
         <CardHeader title="أداء المحصلين" action={
-          data.data ? <Badge>{data.data.total} محصل</Badge> : undefined
+          <div className="flex items-center gap-2">
+            {data.data && <Badge>{data.data.total} محصل</Badge>}
+            <Button variant="secondary" onClick={handleExport} disabled={exporting} className="text-xs">
+              {exporting ? 'جاري...' : 'تصدير Excel'}
+            </Button>
+          </div>
         } />
         <div className="p-4">
           <DataState isLoading={data.isLoading} isError={data.isError} error={data.error}

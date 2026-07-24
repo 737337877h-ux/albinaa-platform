@@ -1,25 +1,36 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { AuthUser } from '../common/guards/jwt-auth.guard';
 import { ReportsService } from './reports.service';
+import { ExportService } from './export/export.service';
 import {
   AgingDetailQueryDto,
   AgingQueryDto,
   CollectionsQueryDto,
   CollectorsPerformanceQueryDto,
   DebtByBranchQueryDto,
-  ExportReportDto,
   ReportFiltersDto,
   UnfollowedQueryDto,
 } from './dto/reports.dto';
+import {
+  ExportExecutiveDto,
+  ExportAgingDto,
+  ExportAgingDetailDto,
+  ExportCollectorsDto,
+  ExportDto,
+} from './dto/export.dto';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
 @Controller('reports')
 export class ReportsController {
-  constructor(private readonly reports: ReportsService) {}
+  constructor(
+    private readonly reports: ReportsService,
+    private readonly exportService: ExportService,
+  ) {}
 
   @Get('executive/kpis')
   @RequirePermissions('reports.executive')
@@ -106,9 +117,13 @@ export class ReportsController {
   }
 
   @Post('export')
-  @RequirePermissions('reports.export')
-  @ApiOperation({ summary: 'تصدير تقرير (PDF/Excel) — Placeholder' })
-  export(@CurrentUser() user: AuthUser, @Body() body: ExportReportDto) {
-    return this.reports.export(user, body);
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'تصدير تقرير Excel' })
+  async exportReport(
+    @CurrentUser() user: AuthUser,
+    @Body() body: ExportDto,
+    @Res() res: Response,
+  ) {
+    return this.exportService.exportToExcel(user, body, res);
   }
 }

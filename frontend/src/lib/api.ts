@@ -113,3 +113,56 @@ export async function api<T = unknown>(
   if (res.status === 204) return undefined as T;
   return res.json();
 }
+
+export async function downloadBlob(
+  path: string,
+  body: Record<string, unknown>,
+  fallbackName: string,
+): Promise<void> {
+  const doFetch = () =>
+    fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(store.access ? { Authorization: `Bearer ${store.access}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+  let res: Response;
+  try {
+    res = await doFetch();
+  } catch {
+    throw new ApiError(0, 'تعذّر الاتصال بالخادم');
+  }
+  if (res.status === 401) {
+    const ok = await tryRefresh();
+    if (ok) res = await doFetch();
+    else {
+      store.clear();
+      if (typeof window !== 'undefined') window.location.href = '/login';
+      throw new ApiError(401, 'انتهت الجلسة — سجّل الدخول من جديد');
+    }
+  }
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null);
+    const msg = Array.isArray((errBody as any)?.message)
+      ? (errBody as any).message.join('، ')
+      : (errBody as any)?.message ?? 'حدث خطأ غير متوقع';
+    throw new ApiError(res.status, msg, errBody);
+  }
+
+  const cd = res.headers.get('Content-Disposition') ?? '';
+  const match = cd.match(/filename\*=UTF-8''(.+)/);
+  const fileName = match ? decodeURIComponent(match[1]) : fallbackName;
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
