@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuthUser } from '../common/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
@@ -362,6 +362,10 @@ export class ReportsService {
   }
 
   async agingDetail(user: AuthUser, query: AgingDetailQueryDto) {
+    if (query.from && query.to && new Date(query.from) > new Date(query.to)) {
+      throw new BadRequestException('تاريخ البداية يجب أن يكون قبل تاريخ النهاية');
+    }
+
     const orgId = user.organizationId;
     const page = query.page ?? 1;
     const limit = query.limit ?? 25;
@@ -415,6 +419,13 @@ export class ReportsService {
       ? Prisma.sql`AND ${Prisma.raw(bucketColMap[query.bucket] ?? '1=0')} > 0`
       : Prisma.empty;
 
+    const fromFilter = query.from
+      ? Prisma.sql`AND first_tx >= ${new Date(query.from)}`
+      : Prisma.empty;
+    const toFilter = query.to
+      ? Prisma.sql`AND first_tx <= ${new Date(query.to)}`
+      : Prisma.empty;
+
     const baseQuery = Prisma.sql`
       WITH per_customer AS (
         SELECT c.id AS customer_id,
@@ -450,6 +461,7 @@ export class ReportsService {
                END AS bucket_assign,
                GREATEST(0, CURRENT_DATE - first_tx) AS days_overdue
           FROM per_customer
+         WHERE 1=1 ${fromFilter} ${toFilter}
       ),
       aggregated AS (
         SELECT customer_id, customer_name, customer_code, branch_name,
