@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  Banknote, BarChart3, Building2, CalendarClock, FileSpreadsheet, HandCoins, KeyRound,
+  Banknote, BarChart3, Building2, CalendarClock, Clock, FileSpreadsheet, HandCoins, KeyRound,
   LayoutDashboard, ListTodo, PhoneCall, Settings, Shield, Users,
 } from 'lucide-react';
 import { useMe, useCan } from '@/lib/auth';
@@ -18,6 +18,7 @@ import { ForcePasswordChange } from '@/components/force-password-change';
 const NAV = [
   { href: '/dashboard', label: 'لوحة التحكم', icon: LayoutDashboard, perm: 'reports.read' },
   { href: '/reports', label: 'التقارير', icon: BarChart3, perm: 'reports.executive' },
+  { href: '/reports/aging', label: 'أعمار الديون', icon: Clock, perm: 'reports.executive' },
   { href: '/tasks', label: 'عمل اليوم', icon: ListTodo, perm: 'tasks.manage' },
   { href: '/customers', label: 'العملاء', icon: Users, perm: 'customers.read' },
   { href: '/followups', label: 'المتابعات', icon: PhoneCall, perm: 'customers.read' },

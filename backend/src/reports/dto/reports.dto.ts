@@ -54,6 +54,28 @@ export class CollectorsPerformanceQueryDto {
   limit?: number;
 }
 
+export class AgingDetailQueryDto extends ReportFiltersDto {
+  @ApiPropertyOptional({ description: 'صفحة النتائج', default: 1 })
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
+  page?: number;
+
+  @ApiPropertyOptional({ description: 'عدد العناصر لكل صفحة', default: 25, maximum: 100 })
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
+  limit?: number;
+
+  @ApiPropertyOptional({ enum: ['customer_name', 'customer_code', 'branch', 'collector', 'currency', 'total_balance', 'current', 'd1_30', 'd31_60', 'd61_90', 'd90_plus', 'oldest_debt_date', 'days_overdue'], default: 'total_balance' })
+  @IsOptional() @IsIn(['customer_name', 'customer_code', 'branch', 'collector', 'currency', 'total_balance', 'current', 'd1_30', 'd31_60', 'd61_90', 'd90_plus', 'oldest_debt_date', 'days_overdue'])
+  sortBy?: string;
+
+  @ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'desc' })
+  @IsOptional() @IsIn(['asc', 'desc'])
+  sortDir?: 'asc' | 'desc';
+
+  @ApiPropertyOptional({ enum: ['current', '1-30', '31-60', '61-90', '90+'], description: 'فلتر فئة أعمار الديون' })
+  @IsOptional() @IsIn(['current', '1-30', '31-60', '61-90', '90+'])
+  bucket?: string;
+}
+
 export class UnfollowedQueryDto extends ReportFiltersDto {
   @ApiPropertyOptional({ description: 'صفحة النتائج', default: 1 })
   @IsOptional() @Type(() => Number) @Min(1) @Max(100)

@@ -5,6 +5,7 @@ import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { AuthUser } from '../common/guards/jwt-auth.guard';
 import { ReportsService } from './reports.service';
 import {
+  AgingDetailQueryDto,
   AgingQueryDto,
   CollectionsQueryDto,
   CollectorsPerformanceQueryDto,
@@ -55,6 +56,13 @@ export class ReportsController {
     return this.reports.aging(user, query);
   }
 
+  @Get('executive/aging-detail')
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'تفصيل أعمار الديون (حسب العميل)' })
+  agingDetail(@CurrentUser() user: AuthUser, @Query() query: AgingDetailQueryDto) {
+    return this.reports.agingDetail(user, query);
+  }
+
   @Get('executive/top-collectors')
   @RequirePermissions('reports.executive')
   @ApiOperation({ summary: 'أداء المحصلين' })
@@ -88,6 +96,13 @@ export class ReportsController {
   @ApiOperation({ summary: 'عملاء بدون متابعة (مع pagination)' })
   unfollowedCustomers(@CurrentUser() user: AuthUser, @Query() query: UnfollowedQueryDto) {
     return this.reports.unfollowedCustomers(user, query);
+  }
+
+  @Get('collectors')
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'قائمة المحصلين (للفلاتر)' })
+  collectorsList(@CurrentUser() user: AuthUser) {
+    return this.reports.collectorsList(user);
   }
 
   @Post('export')

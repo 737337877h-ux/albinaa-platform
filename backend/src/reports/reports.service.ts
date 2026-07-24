@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { AuthUser } from '../common/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  AgingDetailQueryDto,
   AgingQueryDto,
   CollectionsQueryDto,
   CollectorsPerformanceQueryDto,
@@ -360,6 +361,174 @@ export class ReportsService {
     return result;
   }
 
+  async agingDetail(user: AuthUser, query: AgingDetailQueryDto) {
+    const orgId = user.organizationId;
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 25;
+    const offset = (page - 1) * limit;
+    const sortBy = query.sortBy ?? 'total_balance';
+    const sortDir = query.sortDir ?? 'desc';
+    const currency = query.currency;
+
+    const customerWhere: Prisma.Sql[] = [
+      Prisma.sql`AND c.organization_id = CAST(${orgId} AS uuid)`,
+    ];
+    if (query.branchId) {
+      customerWhere.push(Prisma.sql`AND c.branch_id = CAST(${query.branchId} AS uuid)`);
+    }
+    if (query.customerStatus && query.customerStatus !== 'all') {
+      customerWhere.push(Prisma.sql`AND c.status = ${query.customerStatus}`);
+    }
+    if (currency) {
+      customerWhere.push(Prisma.sql`AND cb.currency_code = ${currency}`);
+    }
+    if (query.collectorId) {
+      customerWhere.push(Prisma.sql`AND ca.collector_id = CAST(${query.collectorId} AS uuid)`);
+    }
+
+    const sortColMap: Record<string, string> = {
+      customer_name: 'customer_name',
+      customer_code: 'customer_code',
+      branch: 'branch_name',
+      collector: 'collector_name',
+      currency: 'currency_code',
+      total_balance: 'total_balance',
+      current: 'bucket_current',
+      d1_30: 'bucket_1_30',
+      d31_60: 'bucket_31_60',
+      d61_90: 'bucket_61_90',
+      d90_plus: 'bucket_90_plus',
+      oldest_debt_date: 'first_tx',
+      days_overdue: 'days_overdue',
+    };
+    const sortSql = Prisma.raw(sortColMap[sortBy] ?? 'total_balance');
+    const dirSql = sortDir === 'asc' ? Prisma.raw('ASC') : Prisma.raw('DESC');
+
+    const bucketColMap: Record<string, string> = {
+      current: 'bucket_current',
+      '1-30': 'bucket_1_30',
+      '31-60': 'bucket_31_60',
+      '61-90': 'bucket_61_90',
+      '90+': 'bucket_90_plus',
+    };
+    const bucketFilter = query.bucket
+      ? Prisma.sql`AND ${Prisma.raw(bucketColMap[query.bucket] ?? '1=0')} > 0`
+      : Prisma.empty;
+
+    const baseQuery = Prisma.sql`
+      WITH per_customer AS (
+        SELECT c.id AS customer_id,
+               c.name AS customer_name,
+               c.external_customer_code AS customer_code,
+               b.name AS branch_name,
+               u.full_name AS collector_name,
+               cb.currency_code,
+               cb.accounting_balance,
+               COALESCE(
+                 (SELECT MIN(tx.tx_date)
+                    FROM imported_transactions tx
+                   WHERE tx.customer_id = c.id AND tx.currency_code = cb.currency_code),
+                 c.created_at::date
+               ) AS first_tx
+          FROM customer_balances cb
+          JOIN customers c ON c.id = cb.customer_id
+          LEFT JOIN branches b ON b.id = c.branch_id
+          LEFT JOIN customer_assignments ca ON ca.customer_id = c.id AND ca.effective_to IS NULL
+          LEFT JOIN collectors col ON col.id = ca.collector_id
+          LEFT JOIN users u ON u.id = col.user_id
+         WHERE cb.accounting_balance > 0
+           ${this.sqlJoin(customerWhere)}
+      ),
+      bucketed AS (
+        SELECT *,
+               CASE
+                 WHEN GREATEST(0, CURRENT_DATE - first_tx) = 0 THEN 'current'
+                 WHEN GREATEST(0, CURRENT_DATE - first_tx) <= 30 THEN '1-30'
+                 WHEN GREATEST(0, CURRENT_DATE - first_tx) <= 60 THEN '31-60'
+                 WHEN GREATEST(0, CURRENT_DATE - first_tx) <= 90 THEN '61-90'
+                 ELSE '90+'
+               END AS bucket_assign,
+               GREATEST(0, CURRENT_DATE - first_tx) AS days_overdue
+          FROM per_customer
+      ),
+      aggregated AS (
+        SELECT customer_id, customer_name, customer_code, branch_name,
+               collector_name, currency_code,
+               SUM(accounting_balance) AS total_balance,
+               MAX(first_tx) AS first_tx,
+               MAX(days_overdue) AS days_overdue,
+               SUM(CASE WHEN bucket_assign = 'current' THEN accounting_balance ELSE 0 END) AS bucket_current,
+               SUM(CASE WHEN bucket_assign = '1-30' THEN accounting_balance ELSE 0 END) AS bucket_1_30,
+               SUM(CASE WHEN bucket_assign = '31-60' THEN accounting_balance ELSE 0 END) AS bucket_31_60,
+               SUM(CASE WHEN bucket_assign = '61-90' THEN accounting_balance ELSE 0 END) AS bucket_61_90,
+               SUM(CASE WHEN bucket_assign = '90+' THEN accounting_balance ELSE 0 END) AS bucket_90_plus
+          FROM bucketed
+         GROUP BY customer_id, customer_name, customer_code, branch_name,
+                  collector_name, currency_code
+         HAVING SUM(accounting_balance) > 0
+      )
+      SELECT * FROM aggregated WHERE 1=1 ${bucketFilter}
+    `;
+
+    const sortLimit = Prisma.sql` ORDER BY ${sortSql} ${dirSql} NULLS LAST LIMIT ${limit} OFFSET ${offset}`;
+
+    const [items, countResult, summaryResult] = await Promise.all([
+      this.prisma.$queryRaw<unknown[]>(Prisma.sql`${baseQuery} ${sortLimit}`),
+      this.prisma.$queryRaw<Array<{ count: bigint }>>(
+        Prisma.sql`SELECT COUNT(*) AS count FROM (${baseQuery}) _cnt`
+      ),
+      this.prisma.$queryRaw<Array<{
+        total_debt: Decimal; current_debt: Decimal; overdue_debt: Decimal;
+        bucket_90_plus: Decimal; overdue_customers: bigint;
+      }>>(Prisma.sql`
+        SELECT COALESCE(SUM(total_balance), 0) AS total_debt,
+               COALESCE(SUM(bucket_current), 0) AS current_debt,
+               COALESCE(SUM(total_balance) - SUM(bucket_current), 0) AS overdue_debt,
+               COALESCE(SUM(bucket_90_plus), 0) AS bucket_90_plus,
+               COUNT(*) FILTER (WHERE total_balance - bucket_current > 0) AS overdue_customers
+          FROM (${baseQuery}) _sum
+      `),
+    ]);
+
+    const typedItems = items as Array<{
+      customer_id: string; customer_name: string; customer_code: string;
+      branch_name: string | null; collector_name: string | null;
+      currency_code: string; total_balance: Decimal; first_tx: Date;
+      days_overdue: bigint; bucket_current: Decimal; bucket_1_30: Decimal;
+      bucket_31_60: Decimal; bucket_61_90: Decimal; bucket_90_plus: Decimal;
+    }>;
+
+    return {
+      items: typedItems.map((r) => ({
+        customerId: r.customer_id,
+        customerName: r.customer_name,
+        customerCode: r.customer_code,
+        branch: r.branch_name ?? 'غير محدد',
+        collector: r.collector_name ?? 'غير محدد',
+        currency: r.currency_code,
+        totalBalance: toNumber(r.total_balance),
+        oldestDebtDate: r.first_tx,
+        daysOverdue: Number(r.days_overdue),
+        current: toNumber(r.bucket_current),
+        d1_30: toNumber(r.bucket_1_30),
+        d31_60: toNumber(r.bucket_31_60),
+        d61_90: toNumber(r.bucket_61_90),
+        d90_plus: toNumber(r.bucket_90_plus),
+      })),
+      total: Number(countResult[0]?.count ?? 0),
+      page,
+      limit,
+      totalPages: Math.ceil(Number(countResult[0]?.count ?? 0) / limit),
+      summary: {
+        totalDebt: toNumber(summaryResult[0]?.total_debt ?? 0),
+        currentDebt: toNumber(summaryResult[0]?.current_debt ?? 0),
+        overdueDebt: toNumber(summaryResult[0]?.overdue_debt ?? 0),
+        overDue90Plus: toNumber(summaryResult[0]?.bucket_90_plus ?? 0),
+        overdueCustomers: Number(summaryResult[0]?.overdue_customers ?? 0),
+      },
+    };
+  }
+
   async collectorsPerformance(user: AuthUser, query: CollectorsPerformanceQueryDto) {
     const orgId = user.organizationId;
     const endDate = query.to ? new Date(query.to) : new Date();
@@ -580,6 +749,18 @@ export class ReportsService {
       upcoming,
       overdue,
     };
+  }
+
+  async collectorsList(user: AuthUser) {
+    const orgId = user.organizationId;
+    return this.prisma.$queryRaw<Array<{ id: string; full_name: string }>>`
+      SELECT col.id, u.full_name
+        FROM collectors col
+        JOIN users u ON u.id = col.user_id
+       WHERE col.active = true
+         AND u.organization_id = CAST(${orgId} AS uuid)
+       ORDER BY u.full_name
+    `;
   }
 
   async export(_user: AuthUser, _body: ExportReportDto) {

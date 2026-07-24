@@ -14,6 +14,7 @@ import { PageHeader } from '@/components/app-shell';
 import { Button, Card, CardHeader, Badge, Money, Skeleton } from '@/components/ui/primitives';
 import { Table, THead, TRow, TD } from '@/components/ui/table';
 import { DataState, PermissionNotice } from '@/components/ui/data-state';
+import Link from 'next/link';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
 
@@ -298,7 +299,11 @@ export default function ReportsPage() {
         </Card>
 
         <Card>
-          <CardHeader title="أعمار الديون" />
+          <CardHeader title="أعمار الديون" action={
+            <Link href="/reports/aging">
+              <Button variant="ghost" className="text-xs">عرض التفصيل</Button>
+            </Link>
+          } />
           <div className="p-4">
             <DataState isLoading={aging.isLoading} isError={aging.isError} error={aging.error}
               isEmpty={!aging.data || Object.values(aging.data).every((v: any) => v.total === 0)}

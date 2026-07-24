@@ -6,6 +6,8 @@ import { ChevronLeft } from 'lucide-react';
 /** تُعرَّف تسميات المسارات هنا مركزيًا مع إضافة كل صفحة جديدة. */
 const LABELS: Record<string, string> = {
   dashboard: 'لوحة التحكم',
+  reports: 'التقارير',
+  aging: 'أعمار الديون',
   customers: 'العملاء',
   followups: 'المتابعات',
   promises: 'وعود السداد',
