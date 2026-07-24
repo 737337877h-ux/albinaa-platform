@@ -597,8 +597,8 @@ export class ReportsService {
       ),
       collection_stats AS (
         SELECT c.collector_id,
-               COALESCE(SUM(CASE WHEN c.collected_at >= CURRENT_DATE THEN c.amount ELSE 0 END), 0) AS today_collected,
-               COALESCE(SUM(CASE WHEN c.collected_at >= ${weekStart} THEN c.amount ELSE 0 END), 0) AS week_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(CURRENT_DATE, ${startDate}) AND c.collected_at <= ${endDate} THEN c.amount ELSE 0 END), 0) AS today_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(${weekStart}, ${startDate}) AND c.collected_at <= ${endDate} THEN c.amount ELSE 0 END), 0) AS week_collected,
                COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} AND c.collected_at <= ${endDate} THEN c.amount ELSE 0 END), 0) AS month_collected,
                COUNT(*) FILTER (WHERE c.collected_at >= ${startDate} AND c.collected_at <= ${endDate}) AS collections_count
           FROM collections c
@@ -683,7 +683,7 @@ export class ReportsService {
       `),
       this.prisma.$queryRaw<Array<{ collector: string }>>(
         Prisma.sql`SELECT collector FROM (${baseQuery}) _top
-          ORDER BY month_collected DESC, fulfillment_rate DESC LIMIT 1`
+          ORDER BY month_collected DESC, fulfillment_rate DESC, collector ASC LIMIT 1`
       ),
     ]);
 
