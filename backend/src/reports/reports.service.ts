@@ -552,16 +552,24 @@ export class ReportsService {
     const offset = (page - 1) * limit;
     const sortBy = query.sortBy ?? 'month';
     const sortDir = query.sortDir ?? 'desc';
-    const endDate = query.to ? new Date(query.to) : new Date();
-    const startDate = query.from ? new Date(query.from) : new Date(endDate.getFullYear(), endDate.getMonth() - 2, 1);
+    const collectorStatus = query.collectorStatus ?? 'active';
+
+    const toRaw = query.to ?? new Date().toISOString().slice(0, 10);
+    const fromRaw = query.from ?? new Date(new Date(toRaw).getFullYear(), new Date(toRaw).getMonth() - 2, 1).toISOString().slice(0, 10);
+    const startDate = new Date(fromRaw);
+    const endDate = new Date(toRaw);
+    endDate.setDate(endDate.getDate() + 1);
+    const endExclusive = endDate;
     const weekStart = (() => { const d = new Date(); const day = d.getDay(); const diff = d.getDate() - day + (day === 0 ? -6 : 1); return new Date(d.setDate(diff)); })();
+    const todayEnd = new Date(); todayEnd.setHours(0, 0, 0, 0); todayEnd.setDate(todayEnd.getDate() + 1);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
 
     const collectorWhere: Prisma.Sql[] = [
       Prisma.sql`AND u.organization_id = CAST(${orgId} AS uuid)`,
     ];
-    if (query.collectorStatus === 'active') {
+    if (collectorStatus === 'active') {
       collectorWhere.push(Prisma.sql`AND col.active = true`);
-    } else if (query.collectorStatus === 'inactive') {
+    } else if (collectorStatus === 'inactive') {
       collectorWhere.push(Prisma.sql`AND col.active = false`);
     }
     if (query.branchId) {
@@ -597,15 +605,15 @@ export class ReportsService {
       ),
       collection_stats AS (
         SELECT c.collector_id,
-               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(CURRENT_DATE, ${startDate}) AND c.collected_at <= ${endDate} THEN c.amount ELSE 0 END), 0) AS today_collected,
-               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(${weekStart}, ${startDate}) AND c.collected_at <= ${endDate} THEN c.amount ELSE 0 END), 0) AS week_collected,
-               COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} AND c.collected_at <= ${endDate} THEN c.amount ELSE 0 END), 0) AS month_collected,
-               COUNT(*) FILTER (WHERE c.collected_at >= ${startDate} AND c.collected_at <= ${endDate}) AS collections_count
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(CURRENT_DATE, ${startDate}) AND c.collected_at < LEAST(${todayEnd}, ${endExclusive}) THEN c.amount ELSE 0 END), 0) AS today_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(${weekStart}, ${startDate}) AND c.collected_at < LEAST(${weekEnd}, ${endExclusive}) THEN c.amount ELSE 0 END), 0) AS week_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} AND c.collected_at < ${endExclusive} THEN c.amount ELSE 0 END), 0) AS month_collected,
+               COUNT(*) FILTER (WHERE c.collected_at >= ${startDate} AND c.collected_at < ${endExclusive}) AS collections_count
           FROM collections c
           JOIN customers cust ON cust.id = c.customer_id
          WHERE cust.organization_id = CAST(${orgId} AS uuid)
            AND c.status <> 'reversed'
-           AND c.collected_at <= ${endDate}
+           AND c.collected_at < ${endExclusive}
          GROUP BY c.collector_id
       ),
       promise_stats AS (
@@ -624,7 +632,7 @@ export class ReportsService {
           FROM collectors col
           JOIN users u ON u.id = col.user_id
           LEFT JOIN followups f ON f.user_id = col.user_id AND f.deleted_at IS NULL
-           AND f.followup_at >= ${startDate} AND f.followup_at <= ${endDate}
+           AND f.followup_at >= ${startDate} AND f.followup_at < ${endExclusive}
          WHERE u.organization_id = CAST(${orgId} AS uuid)
          GROUP BY col.id
       ),

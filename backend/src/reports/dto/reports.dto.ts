@@ -53,7 +53,7 @@ export class CollectorsPerformanceQueryDto extends ReportFiltersDto {
   @IsOptional() @IsIn(['asc', 'desc'])
   sortDir?: 'asc' | 'desc';
 
-  @ApiPropertyOptional({ enum: ['active', 'inactive', 'all'], default: 'all', description: 'حالة المحصل' })
+  @ApiPropertyOptional({ enum: ['active', 'inactive', 'all'], default: 'active', description: 'حالة المحصل' })
   @IsOptional() @IsIn(['active', 'inactive', 'all'])
   collectorStatus?: 'active' | 'inactive' | 'all';
 }

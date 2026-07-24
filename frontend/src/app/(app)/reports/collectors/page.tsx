@@ -46,7 +46,6 @@ interface FilterState {
   to: string;
   branchId: string;
   collectorId: string;
-  customerStatus: string;
   collectorStatus: string;
   sortBy: string;
   sortDir: string;
@@ -70,7 +69,6 @@ function readFilters(sp: URLSearchParams): FilterState {
     to: sp.get('to') ?? '',
     branchId: sp.get('branchId') ?? '',
     collectorId: sp.get('collectorId') ?? '',
-    customerStatus: sp.get('customerStatus') ?? 'all',
     collectorStatus: sp.get('collectorStatus') ?? 'active',
     sortBy: sp.get('sortBy') ?? 'month',
     sortDir: sp.get('sortDir') ?? 'desc',
@@ -83,7 +81,6 @@ function buildParams(f: FilterState) {
   if (f.to) p.set('to', f.to);
   if (f.branchId) p.set('branchId', f.branchId);
   if (f.collectorId) p.set('collectorId', f.collectorId);
-  if (f.customerStatus && f.customerStatus !== 'all') p.set('customerStatus', f.customerStatus);
   if (f.collectorStatus && f.collectorStatus !== 'all') p.set('collectorStatus', f.collectorStatus);
   p.set('sortBy', f.sortBy);
   p.set('sortDir', f.sortDir);
@@ -142,7 +139,7 @@ export default function CollectorsPerformancePage() {
     enabled: canExec,
   });
 
-  const hasFilters = !!(filters.from || filters.to || filters.branchId || filters.collectorId || filters.customerStatus !== 'all' || filters.collectorStatus !== 'active');
+  const hasFilters = !!(filters.from || filters.to || filters.branchId || filters.collectorId || filters.collectorStatus !== 'active');
 
   if (!canExec) {
     return (
@@ -194,15 +191,6 @@ export default function CollectorsPerformancePage() {
               className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800">
               <option value="">جميع المحصلين</option>
               {(collectors.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-            </select>
-          </div>
-          <div className="min-w-[8rem]">
-            <label className="mb-1 block text-xs text-concrete-500">حالة العميل</label>
-            <select value={filters.customerStatus} onChange={(e) => setFilter('customerStatus', e.target.value)}
-              className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800">
-              <option value="all">الكل</option>
-              <option value="active">نشط</option>
-              <option value="inactive">غير نشط</option>
             </select>
           </div>
           <div className="min-w-[8rem]">
