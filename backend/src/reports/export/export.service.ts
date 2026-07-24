@@ -1,17 +1,16 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import ExcelJS from 'exceljs';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 import { AuthUser } from '../../common/guards/jwt-auth.guard';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
-  ExportDto,
   ExportExecutiveDto,
   ExportAgingDto,
   ExportAgingDetailDto,
   ExportCollectorsDto,
   MAX_EXPORT_ROWS,
-  STREAMING_THRESHOLD,
-  ExportReportType,
 } from '../dto/export.dto';
 import { Prisma } from '@prisma/client';
 
@@ -24,28 +23,93 @@ function toNum(v: Decimal | bigint | number | null | undefined): number {
   return Number(v);
 }
 
+function startOfDay(dateStr: string): Date {
+  const d = new Date(dateStr);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endExclusive(dateStr: string): Date {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+const CURRENCY_FMT = '#,##0.00';
+const PCT_FMT = '0.0%';
+
+interface SheetData {
+  name: string;
+  headers: string[];
+  columnFormats: ('text' | 'currency' | 'percent' | 'integer' | 'date')[];
+  rows: unknown[][];
+}
+
 @Injectable()
 export class ExportService {
   private readonly logger = new Logger(ExportService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async exportToExcel(
-    user: AuthUser,
-    dto: ExportDto,
-    res: Response,
-  ): Promise<void> {
-    const { report, format } = dto;
-    if (format !== 'xlsx') {
-      throw new BadRequestException('هذه الدالة تدعم تصدير Excel فقط');
+  /* ======================== VALIDATION ======================== */
+
+  private static readonly DTO_MAP: Record<string, new () => object> = {
+    executive: ExportExecutiveDto,
+    aging: ExportAgingDto,
+    'aging-detail': ExportAgingDetailDto,
+    collectors: ExportCollectorsDto,
+  };
+
+  async validateExportBody(body: Record<string, unknown>): Promise<
+    ExportExecutiveDto | ExportAgingDto | ExportAgingDetailDto | ExportCollectorsDto
+  > {
+    if (!body || typeof body.report !== 'string') {
+      throw new BadRequestException('حقل report مطلوب');
+    }
+    if (!body.format || body.format !== 'xlsx') {
+      throw new BadRequestException('حقل format يجب أن يكون xlsx');
     }
 
-    const data = await this.fetchReportData(user, dto);
-    if (data.rows.length > MAX_EXPORT_ROWS) {
+    const DtoClass = ExportService.DTO_MAP[body.report];
+    if (!DtoClass) {
       throw new BadRequestException(
-        `التصدير محدود بـ ${MAX_EXPORT_ROWS.toLocaleString('ar')} صف. استخدم الفلاتر لتضييق النطاق.`,
+        `نوع التقرير "${body.report}" غير مدعوم. الأنواع المدعومة: ${Object.keys(ExportService.DTO_MAP).join(', ')}`,
       );
     }
+
+    const dto = plainToInstance(DtoClass, body, { excludeExtraneousValues: false });
+    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+    if (errors.length > 0) {
+      const messages = errors.flatMap((e) => Object.values(e.constraints ?? {}));
+      throw new BadRequestException(
+        messages.length > 0 ? messages.join('، ') : 'البيانات غير صحيحة',
+      );
+    }
+
+    return dto as ExportExecutiveDto | ExportAgingDto | ExportAgingDetailDto | ExportCollectorsDto;
+  }
+
+  /* ======================== MAIN EXPORT ENTRY ======================== */
+
+  async exportToExcel(
+    user: AuthUser,
+    body: Record<string, unknown>,
+    res: Response,
+  ): Promise<void> {
+    const dto = await this.validateExportBody(body);
+    const data = await this.fetchReportData(user, dto);
+
+    /* ---- Fix 2: count total rows across ALL sheets, enforce limit ---- */
+    const totalRows = data.sheets.reduce((sum, s) => sum + s.rows.length, 0);
+    if (totalRows > MAX_EXPORT_ROWS) {
+      throw new BadRequestException(
+        `التصدير محدود بـ 50,000 صف. تم العثور على ${totalRows.toLocaleString('ar')} صف. استخدم الفلاتر لتضييق النطاق.`,
+      );
+    }
+
+    /* ---- Build Excel workbook (50k row cap keeps memory bounded) ---- */
+    const fileName = this.fileNameFor(dto);
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'البناء الراقي';
@@ -55,12 +119,12 @@ export class ExportService {
       const ws = wb.addWorksheet(sheet.name);
       ws.views = [{ rightToLeft: true }];
 
+      /* Headers */
       const headerRow = ws.addRow(sheet.headers);
       headerRow.font = { bold: true, size: 11, name: 'Arial' };
       headerRow.eachCell((cell) => {
         cell.fill = {
-          type: 'pattern',
-          pattern: 'solid',
+          type: 'pattern', pattern: 'solid',
           fgColor: { argb: 'FF227850' },
         };
         cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
@@ -70,39 +134,35 @@ export class ExportService {
         };
       });
 
-      sheet.rows.forEach((row) => ws.addRow(row));
+      /* Data rows */
+      for (const row of data.rows) {
+        if (row._sheet !== sheet.name) continue;
+        const values = row._values as unknown[];
+        const excelRow = ws.addRow(values);
 
-      ws.columns?.forEach((col) => {
-        if (!col || !col.eachCell) return;
-        let maxLen = 10;
-        col.eachCell({ includeEmpty: false }, (cell) => {
-          const val = cell.value?.toString() ?? '';
-          const arLen = val.length * 1.5;
-          maxLen = Math.max(maxLen, Math.min(arLen, 50));
-        });
-        col.width = maxLen + 2;
-      });
-
-      if (sheet.rows.length <= STREAMING_THRESHOLD) {
-        // In-memory is fine (already added)
-      } else {
-        this.logger.log(
-          `Streaming mode for sheet "${sheet.name}" (${sheet.rows.length} rows)`,
-        );
+        for (let ci = 0; ci < values.length; ci++) {
+          const cell = excelRow.getCell(ci + 1);
+          const fmt = sheet.columnFormats[ci];
+          if (fmt === 'currency') {
+            cell.numFmt = CURRENCY_FMT;
+          } else if (fmt === 'percent') {
+            cell.numFmt = PCT_FMT;
+          } else if (fmt === 'integer') {
+            cell.numFmt = '0';
+          } else if (fmt === 'date') {
+            cell.numFmt = 'YYYY-MM-DD';
+          }
+        }
       }
+
+      /* Auto-width */
+      const colWidths = this.computeColumnWidths(sheet);
+      colWidths.forEach((w, i) => {
+        ws.getColumn(i + 1)!.width = w;
+      });
     }
 
-    const reportNames: Record<ExportReportType, string> = {
-      executive: 'التقارير_التنفيذية',
-      aging: 'أعمار_الديون',
-      'aging-detail': 'تفصيل_أعمار_الديون',
-      collectors: 'أداء_المحصلين',
-    };
-
     const buffer = await wb.xlsx.writeBuffer();
-    const nodeBuffer = Buffer.from(buffer);
-
-    const fileName = `${reportNames[report] ?? report}_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     res.setHeader(
       'Content-Type',
@@ -112,14 +172,26 @@ export class ExportService {
       'Content-Disposition',
       `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
     );
-    res.setHeader('Content-Length', nodeBuffer.length);
-    res.send(nodeBuffer);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.status(200).send(buffer);
   }
+
+  /* ======================== ROW COUNT (pre-check) ======================== */
+
+  async countExportRows(
+    user: AuthUser,
+    dto: ExportExecutiveDto | ExportAgingDto | ExportAgingDetailDto | ExportCollectorsDto,
+  ): Promise<number> {
+    const data = await this.fetchReportData(user, dto);
+    return data.sheets.reduce((sum, s) => sum + s.rows.length, 0);
+  }
+
+  /* ======================== ROUTING ======================== */
 
   private async fetchReportData(
     user: AuthUser,
-    dto: ExportDto,
-  ): Promise<{ sheets: SheetData[]; rows: unknown[] }> {
+    dto: ExportExecutiveDto | ExportAgingDto | ExportAgingDetailDto | ExportCollectorsDto,
+  ): Promise<{ sheets: SheetData[]; rows: { _sheet: string; _values: unknown[] }[] }> {
     switch (dto.report) {
       case 'executive':
         return this.fetchExecutiveData(user, dto);
@@ -134,78 +206,122 @@ export class ExportService {
     }
   }
 
+  /* ======================== EXECUTIVE (Fix 4: ALL filters on ALL sheets) ======================== */
+
   private async fetchExecutiveData(
     user: AuthUser,
     dto: ExportExecutiveDto,
-  ): Promise<{ sheets: SheetData[]; rows: unknown[] }> {
+  ): Promise<{ sheets: SheetData[]; rows: { _sheet: string; _values: unknown[] }[] }> {
     const orgId = user.organizationId;
-    const from = dto.from ? new Date(dto.from) : undefined;
-    const to = dto.to ? new Date(dto.to) : undefined;
+    const startDate = dto.from ? startOfDay(dto.from) : undefined;
+    const endDate = dto.to ? endExclusive(dto.to) : undefined;
 
-    const where: Prisma.Sql[] = [
-      Prisma.sql`c.organization_id = CAST(${orgId} AS uuid)`,
-      Prisma.sql`AND c.status <> 'reversed'`,
-    ];
-    if (dto.branchId)
-      where.push(Prisma.sql`AND cust.branch_id = CAST(${dto.branchId} AS uuid)`);
-    if (from) where.push(Prisma.sql`AND c.collected_at >= ${from}`);
-    if (to) where.push(Prisma.sql`AND c.collected_at <= ${to}`);
+    const orgFilter = Prisma.sql`cust.organization_id = CAST(${orgId} AS uuid)`;
+    const orgFilterCust = Prisma.sql`cust.organization_id = CAST(${orgId} AS uuid)`;
+    const orgFilterFollowup = Prisma.sql`c.organization_id = CAST(${orgId} AS uuid)`;
+
+    const branchFilter = dto.branchId
+      ? Prisma.sql`AND cust.branch_id = CAST(${dto.branchId} AS uuid)`
+      : Prisma.empty;
+    const branchFilterCb = dto.branchId
+      ? Prisma.sql`AND cust.branch_id = CAST(${dto.branchId} AS uuid)`
+      : Prisma.empty;
+    const dateFrom = startDate
+      ? Prisma.sql`AND c.collected_at >= ${startDate}`
+      : Prisma.empty;
+    const dateTo = endDate
+      ? Prisma.sql`AND c.collected_at < ${endDate}`
+      : Prisma.empty;
+    const statusFilter = dto.customerStatus && dto.customerStatus !== 'all'
+      ? Prisma.sql`AND cust.status = ${dto.customerStatus}`
+      : Prisma.empty;
+    const statusFilterCb = dto.customerStatus && dto.customerStatus !== 'all'
+      ? Prisma.sql`AND cust.status = ${dto.customerStatus}`
+      : Prisma.empty;
 
     const [debtByCurrency, collectionsByMonth, collectionsByMethod, promises, followups, unfollowed] =
       await Promise.all([
+        /* debtByCurrency: org + branch + customerStatus */
         this.prisma.$queryRaw<Array<{ currency_code: string; total: Decimal }>>`
           SELECT cb.currency_code,
                  COALESCE(SUM(CASE WHEN cb.accounting_balance > 0 THEN cb.accounting_balance ELSE 0 END), 0) AS total
             FROM customer_balances cb
             JOIN customers cust ON cust.id = cb.customer_id
-           WHERE cust.organization_id = CAST(${orgId} AS uuid)
+           WHERE ${orgFilter}
+             ${branchFilterCb}
+             ${statusFilterCb}
            GROUP BY cb.currency_code
+           ORDER BY cb.currency_code
         `,
+        /* collectionsByMonth: org + branch + customerStatus + date */
         this.prisma.$queryRaw<Array<{ period: string; total: Decimal }>>`
           SELECT TO_CHAR(DATE_TRUNC('month', c.collected_at), 'YYYY-MM') AS period,
                  COALESCE(SUM(c.amount), 0) AS total
             FROM collections c
             JOIN customers cust ON cust.id = c.customer_id
-           WHERE cust.organization_id = CAST(${orgId} AS uuid) AND c.status <> 'reversed'
-             ${dto.from ? Prisma.sql`AND c.collected_at >= ${new Date(dto.from)}` : Prisma.empty}
-             ${dto.to ? Prisma.sql`AND c.collected_at <= ${new Date(dto.to)}` : Prisma.empty}
-             ${dto.branchId ? Prisma.sql`AND cust.branch_id = CAST(${dto.branchId} AS uuid)` : Prisma.empty}
+           WHERE ${orgFilter}
+             AND c.status <> 'reversed'
+             ${branchFilter}
+             ${statusFilter}
+             ${dateFrom}
+             ${dateTo}
            GROUP BY 1 ORDER BY 1
         `,
+        /* collectionsByMethod: org + branch + customerStatus + date */
         this.prisma.$queryRaw<Array<{ method: string; total: Decimal; count: bigint }>>`
           SELECT cm.name AS method, COALESCE(SUM(c.amount), 0) AS total, COUNT(*) AS count
             FROM collections c
             JOIN customers cust ON cust.id = c.customer_id
             JOIN collection_methods cm ON cm.id = c.method_id
-           WHERE cust.organization_id = CAST(${orgId} AS uuid) AND c.status <> 'reversed'
-             ${dto.from ? Prisma.sql`AND c.collected_at >= ${new Date(dto.from)}` : Prisma.empty}
-             ${dto.to ? Prisma.sql`AND c.collected_at <= ${new Date(dto.to)}` : Prisma.empty}
+           WHERE ${orgFilter}
+             AND c.status <> 'reversed'
+             ${branchFilter}
+             ${statusFilter}
+             ${dateFrom}
+             ${dateTo}
            GROUP BY cm.name ORDER BY total DESC
         `,
+        /* promises: org + branch + customerStatus + date */
         this.prisma.$queryRaw<Array<{ status: string; count: bigint; total: Decimal }>>`
           SELECT p.status, COUNT(*) AS count, COALESCE(SUM(p.expected_amount), 0) AS total
             FROM payment_promises p
             JOIN customers cust ON cust.id = p.customer_id
-           WHERE cust.organization_id = CAST(${orgId} AS uuid)
+           WHERE ${orgFilterCust}
+             ${dto.branchId ? Prisma.sql`AND cust.branch_id = CAST(${dto.branchId} AS uuid)` : Prisma.empty}
+             ${dto.customerStatus && dto.customerStatus !== 'all' ? Prisma.sql`AND cust.status = ${dto.customerStatus}` : Prisma.empty}
+             ${startDate ? Prisma.sql`AND p.promise_date >= ${startDate}` : Prisma.empty}
+             ${endDate ? Prisma.sql`AND p.promise_date < ${endDate}` : Prisma.empty}
            GROUP BY p.status ORDER BY count DESC
         `,
+        /* followups: org + branch + customerStatus + date */
         this.prisma.$queryRaw<Array<{ type_ar: string; count: bigint }>>`
           SELECT ft.name AS type_ar, COUNT(*) AS count
             FROM followups f
             JOIN customers c ON c.id = f.customer_id
             JOIN followup_types ft ON ft.id = f.type_id
-           WHERE f.deleted_at IS NULL AND c.organization_id = CAST(${orgId} AS uuid)
+           WHERE f.deleted_at IS NULL
+             AND ${orgFilterFollowup}
+             ${dto.branchId ? Prisma.sql`AND c.branch_id = CAST(${dto.branchId} AS uuid)` : Prisma.empty}
+             ${dto.customerStatus && dto.customerStatus !== 'all' ? Prisma.sql`AND c.status = ${dto.customerStatus}` : Prisma.empty}
+             ${startDate ? Prisma.sql`AND f.followup_at >= ${startDate}` : Prisma.empty}
+             ${endDate ? Prisma.sql`AND f.followup_at < ${endDate}` : Prisma.empty}
            GROUP BY ft.name ORDER BY count DESC
         `,
+        /* unfollowed: org + branch + customerStatus + date */
         this.prisma.$queryRaw<Array<{ name: string; code: string }>>`
           SELECT c.name, c.external_customer_code AS code
             FROM customers c
-           WHERE c.organization_id = CAST(${orgId} AS uuid)
+           WHERE ${orgFilterFollowup}
              AND c.status = 'active'
+             ${dto.branchId ? Prisma.sql`AND c.branch_id = CAST(${dto.branchId} AS uuid)` : Prisma.empty}
+             ${dto.customerStatus && dto.customerStatus !== 'all' ? Prisma.sql`AND c.status = ${dto.customerStatus}` : Prisma.empty}
              AND NOT EXISTS (
-               SELECT 1 FROM followups f WHERE f.customer_id = c.id AND f.deleted_at IS NULL
+               SELECT 1 FROM followups f
+                WHERE f.customer_id = c.id AND f.deleted_at IS NULL
+                  ${startDate ? Prisma.sql`AND f.followup_at >= ${startDate}` : Prisma.empty}
+                  ${endDate ? Prisma.sql`AND f.followup_at < ${endDate}` : Prisma.empty}
              )
-           ORDER BY c.name LIMIT 100
+           ORDER BY c.name LIMIT 1000
         `,
       ]);
 
@@ -213,42 +329,50 @@ export class ExportService {
       {
         name: 'ملخص المديونية',
         headers: ['العملة', 'الإجمالي'],
+        columnFormats: ['text', 'currency'],
         rows: debtByCurrency.map((r) => [r.currency_code, toNum(r.total)]),
       },
       {
         name: 'التحصيل الشهري',
         headers: ['الفترة', 'الإجمالي'],
+        columnFormats: ['text', 'currency'],
         rows: collectionsByMonth.map((r) => [r.period, toNum(r.total)]),
       },
       {
         name: 'التحصيل حسب الطريقة',
         headers: ['الطريقة', 'الإجمالي', 'العدد'],
+        columnFormats: ['text', 'currency', 'integer'],
         rows: collectionsByMethod.map((r) => [r.method, toNum(r.total), Number(r.count)]),
       },
       {
         name: 'الوعود حسب الحالة',
         headers: ['الحالة', 'العدد', 'الإجمالي'],
+        columnFormats: ['text', 'integer', 'currency'],
         rows: promises.map((r) => [r.status, Number(r.count), toNum(r.total)]),
       },
       {
         name: 'المتابعات حسب النوع',
         headers: ['النوع', 'العدد'],
+        columnFormats: ['text', 'integer'],
         rows: followups.map((r) => [r.type_ar, Number(r.count)]),
       },
       {
         name: 'عملاء بدون متابعة',
         headers: ['الاسم', 'الكود'],
+        columnFormats: ['text', 'text'],
         rows: unfollowed.map((r) => [r.name, r.code]),
       },
     ];
 
-    return { sheets, rows: [] };
+    return this.buildResult(sheets);
   }
+
+  /* ======================== AGING ======================== */
 
   private async fetchAgingData(
     user: AuthUser,
     dto: ExportAgingDto,
-  ): Promise<{ sheets: SheetData[]; rows: unknown[] }> {
+  ): Promise<{ sheets: SheetData[]; rows: { _sheet: string; _values: unknown[] }[] }> {
     const orgId = user.organizationId;
     const currency = dto.currency ?? 'USD';
 
@@ -268,7 +392,7 @@ export class ExportService {
           JOIN customers c ON c.id = cb.customer_id
          WHERE c.organization_id = CAST(${orgId} AS uuid)
            AND cb.currency_code = ${currency}
-            ${bf.length > 0 ? Prisma.join(bf) : Prisma.empty}
+           ${bf.length > 0 ? Prisma.join(bf) : Prisma.empty}
       )
       SELECT CASE
                WHEN accounting_balance <= 0 THEN 'settled'
@@ -286,47 +410,49 @@ export class ExportService {
     `;
 
     const bucketLabels: Record<string, string> = {
-      settled: 'غير مستحق',
-      '1-30': '1-30 يومًا',
-      '31-60': '31-60 يومًا',
-      '61-90': '61-90 يومًا',
-      '91-180': '91-180 يومًا',
-      '180+': 'أكثر من 180 يومًا',
+      settled: 'غير مستحق', '1-30': '1-30 يومًا', '31-60': '31-60 يومًا',
+      '61-90': '61-90 يومًا', '91-180': '91-180 يومًا', '180+': 'أكثر من 180 يومًا',
     };
 
-    const resultRows = buckets.map((r) => [
-      bucketLabels[r.bucket] ?? r.bucket,
-      toNum(r.total),
-      Number(r.customer_count),
-    ]);
+    const sheet: SheetData = {
+      name: `أعمار الديون (${currency})`,
+      headers: ['الفئة', 'الإجمالي', 'عدد العملاء'],
+      columnFormats: ['text', 'currency', 'integer'],
+      rows: buckets.map((r) => [
+        bucketLabels[r.bucket] ?? r.bucket,
+        toNum(r.total),
+        Number(r.customer_count),
+      ]),
+    };
 
-    const sheets: SheetData[] = [
-      {
-        name: `أعمار الديون (${currency})`,
-        headers: ['الفئة', 'الإجمالي', 'عدد العملاء'],
-        rows: resultRows,
-      },
-    ];
-
-    return { sheets, rows: resultRows };
+    return this.buildResult([sheet]);
   }
+
+  /* ======================== AGING DETAIL (Fix 6: COUNT first, no LIMIT) ======================== */
 
   private async fetchAgingDetailData(
     user: AuthUser,
     dto: ExportAgingDetailDto,
-  ): Promise<{ sheets: SheetData[]; rows: unknown[] }> {
+  ): Promise<{ sheets: SheetData[]; rows: { _sheet: string; _values: unknown[] }[] }> {
     const orgId = user.organizationId;
     const currency = dto.currency;
 
-    const customerWhere: Prisma.Sql[] = [
+    const cw: Prisma.Sql[] = [
       Prisma.sql`AND c.organization_id = CAST(${orgId} AS uuid)`,
     ];
-    if (dto.branchId) customerWhere.push(Prisma.sql`AND c.branch_id = CAST(${dto.branchId} AS uuid)`);
+    if (dto.branchId) cw.push(Prisma.sql`AND c.branch_id = CAST(${dto.branchId} AS uuid)`);
     if (dto.customerStatus && dto.customerStatus !== 'all')
-      customerWhere.push(Prisma.sql`AND c.status = ${dto.customerStatus}`);
-    if (currency) customerWhere.push(Prisma.sql`AND cb.currency_code = ${currency}`);
-    if (dto.collectorId)
-      customerWhere.push(Prisma.sql`AND ca.collector_id = CAST(${dto.collectorId} AS uuid)`);
+      cw.push(Prisma.sql`AND c.status = ${dto.customerStatus}`);
+    if (currency) cw.push(Prisma.sql`AND cb.currency_code = ${currency}`);
+    if (dto.collectorId) cw.push(Prisma.sql`AND ca.collector_id = CAST(${dto.collectorId} AS uuid)`);
+
+    const bucketColMap: Record<string, string> = {
+      current: 'bucket_current', '1-30': 'bucket_1_30',
+      '31-60': 'bucket_31_60', '61-90': 'bucket_61_90', '90+': 'bucket_90_plus',
+    };
+    const bucketFilter = dto.bucket
+      ? Prisma.sql`AND ${Prisma.raw(bucketColMap[dto.bucket] ?? '1=0')} > 0`
+      : Prisma.empty;
 
     const baseQuery = Prisma.sql`
       WITH per_customer AS (
@@ -345,7 +471,7 @@ export class ExportService {
           LEFT JOIN collectors col ON col.id = ca.collector_id
           LEFT JOIN users u ON u.id = col.user_id
          WHERE cb.accounting_balance > 0
-           ${Prisma.join(customerWhere)}
+           ${Prisma.join(cw)}
       ),
       bucketed AS (
         SELECT *,
@@ -375,10 +501,20 @@ export class ExportService {
                   collector_name, currency_code
          HAVING SUM(accounting_balance) > 0
       )
-      SELECT * FROM aggregated
+      SELECT * FROM aggregated WHERE 1=1 ${bucketFilter}
       ORDER BY total_balance DESC
-      LIMIT ${dto.limit ?? 500}
     `;
+
+    /* Fix 6: COUNT query first to enforce MAX_EXPORT_ROWS */
+    const [countResult] = await this.prisma.$queryRaw<Array<{ count: bigint }>>(
+      Prisma.sql`SELECT COUNT(*) AS count FROM (${baseQuery}) _cnt`,
+    );
+    const totalRows = Number(countResult?.count ?? 0);
+    if (totalRows > MAX_EXPORT_ROWS) {
+      throw new BadRequestException(
+        `التصدير محدود بـ 50,000 صف. تم العثور على ${totalRows.toLocaleString('ar')} صف. استخدم الفلاتر لتضييق النطاق.`,
+      );
+    }
 
     const items = await this.prisma.$queryRaw<Array<{
       customer_name: string; customer_code: string; branch_name: string | null;
@@ -388,67 +524,58 @@ export class ExportService {
       bucket_61_90: Decimal; bucket_90_plus: Decimal;
     }>>(baseQuery);
 
-    const resultRows = items.map((r) => [
-      r.customer_name,
-      r.customer_code,
-      r.branch_name ?? 'غير محدد',
-      r.collector_name ?? 'غير محدد',
-      r.currency_code,
-      toNum(r.total_balance),
-      toNum(r.bucket_current),
-      toNum(r.bucket_1_30),
-      toNum(r.bucket_31_60),
-      toNum(r.bucket_61_90),
-      toNum(r.bucket_90_plus),
-      r.first_tx ? new Date(r.first_tx).toISOString().slice(0, 10) : '',
-      Number(r.days_overdue),
-    ]);
+    const sheet: SheetData = {
+      name: 'تفصيل أعمار الديون',
+      headers: [
+        'اسم العميل', 'كود العميل', 'الفرع', 'المحصل', 'العملة',
+        'الرصيد الكلي', 'الحالي', '1-30', '31-60', '61-90', '90+',
+        'تاريخ أقدم دين', 'أيام التأخر',
+      ],
+      columnFormats: [
+        'text', 'text', 'text', 'text', 'text',
+        'currency', 'currency', 'currency', 'currency', 'currency', 'currency',
+        'date', 'integer',
+      ],
+      rows: items.map((r) => [
+        r.customer_name, r.customer_code, r.branch_name ?? 'غير محدد',
+        r.collector_name ?? 'غير محدد', r.currency_code,
+        toNum(r.total_balance), toNum(r.bucket_current), toNum(r.bucket_1_30),
+        toNum(r.bucket_31_60), toNum(r.bucket_61_90), toNum(r.bucket_90_plus),
+        r.first_tx ? new Date(r.first_tx).toISOString().slice(0, 10) : '',
+        Number(r.days_overdue),
+      ]),
+    };
 
-    const sheets: SheetData[] = [
-      {
-        name: 'تفصيل أعمار الديون',
-        headers: [
-          'اسم العميل', 'كود العميل', 'الفرع', 'المحصل', 'العملة',
-          'الرصيد الكلي', 'الحالي', '1-30', '31-60', '61-90', '90+',
-          'تاريخ أقدم دين', 'أيام التأخر',
-        ],
-        rows: resultRows,
-      },
-    ];
-
-    return { sheets, rows: resultRows };
+    return this.buildResult([sheet]);
   }
+
+  /* ======================== COLLECTORS (Fix 5: date boundaries) ======================== */
 
   private async fetchCollectorsData(
     user: AuthUser,
     dto: ExportCollectorsDto,
-  ): Promise<{ sheets: SheetData[]; rows: unknown[] }> {
+  ): Promise<{ sheets: SheetData[]; rows: { _sheet: string; _values: unknown[] }[] }> {
     const orgId = user.organizationId;
     const toRaw = dto.to ?? new Date().toISOString().slice(0, 10);
     const fromRaw = dto.from ?? new Date(new Date(toRaw).getFullYear(), new Date(toRaw).getMonth() - 2, 1).toISOString().slice(0, 10);
-    const startDate = new Date(fromRaw);
-    const endDateInclusive = new Date(toRaw);
-    const endExclusive = new Date(toRaw);
-    endExclusive.setDate(endExclusive.getDate() + 1);
+    const startDate = startOfDay(fromRaw);
+    const endExcl = endExclusive(toRaw);
+    const endDateInclusive = new Date(endExcl.getTime() - 86400000);
     const weekStart = (() => {
-      const d = new Date();
-      const day = d.getDay();
+      const d = new Date(); const day = d.getDay();
       const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-      return new Date(d.setDate(diff));
+      return new Date(d.getFullYear(), d.getMonth(), diff);
     })();
-    const todayEnd = new Date();
-    todayEnd.setHours(0, 0, 0, 0);
-    todayEnd.setDate(todayEnd.getDate() + 1);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekEnd.getDate() + 7);
+    const todayEnd = new Date(); todayEnd.setHours(0, 0, 0, 0); todayEnd.setDate(todayEnd.getDate() + 1);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
 
-    const collectorWhere: Prisma.Sql[] = [
+    const cw: Prisma.Sql[] = [
       Prisma.sql`AND u.organization_id = CAST(${orgId} AS uuid)`,
     ];
-    if (dto.collectorStatus === 'active') collectorWhere.push(Prisma.sql`AND col.active = true`);
-    else if (dto.collectorStatus === 'inactive') collectorWhere.push(Prisma.sql`AND col.active = false`);
-    if (dto.branchId) collectorWhere.push(Prisma.sql`AND col.branch_id = CAST(${dto.branchId} AS uuid)`);
-    if (dto.collectorId) collectorWhere.push(Prisma.sql`AND col.id = CAST(${dto.collectorId} AS uuid)`);
+    if (dto.collectorStatus === 'active') cw.push(Prisma.sql`AND col.active = true`);
+    else if (dto.collectorStatus === 'inactive') cw.push(Prisma.sql`AND col.active = false`);
+    if (dto.branchId) cw.push(Prisma.sql`AND col.branch_id = CAST(${dto.branchId} AS uuid)`);
+    if (dto.collectorId) cw.push(Prisma.sql`AND col.id = CAST(${dto.collectorId} AS uuid)`);
 
     const baseQuery = Prisma.sql`
       WITH collector_stats AS (
@@ -457,20 +584,20 @@ export class ExportService {
           FROM collectors col
           JOIN users u ON u.id = col.user_id
           LEFT JOIN customer_assignments ca ON ca.collector_id = col.id AND ca.effective_to IS NULL
-         WHERE 1=1 ${Prisma.join(collectorWhere)}
+         WHERE 1=1 ${Prisma.join(cw)}
          GROUP BY col.id, u.full_name
       ),
       collection_stats AS (
         SELECT c.collector_id,
-               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(CURRENT_DATE, ${startDate}) AND c.collected_at < LEAST(${todayEnd}, ${endExclusive}) THEN c.amount ELSE 0 END), 0) AS today_collected,
-               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(${weekStart}, ${startDate}) AND c.collected_at < LEAST(${weekEnd}, ${endExclusive}) THEN c.amount ELSE 0 END), 0) AS week_collected,
-               COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} AND c.collected_at < ${endExclusive} THEN c.amount ELSE 0 END), 0) AS month_collected,
-               COUNT(*) FILTER (WHERE c.collected_at >= ${startDate} AND c.collected_at < ${endExclusive}) AS collections_count
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(CURRENT_DATE, ${startDate}) AND c.collected_at < LEAST(${todayEnd}, ${endExcl}) THEN c.amount ELSE 0 END), 0) AS today_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= GREATEST(${weekStart}, ${startDate}) AND c.collected_at < LEAST(${weekEnd}, ${endExcl}) THEN c.amount ELSE 0 END), 0) AS week_collected,
+               COALESCE(SUM(CASE WHEN c.collected_at >= ${startDate} AND c.collected_at < ${endExcl} THEN c.amount ELSE 0 END), 0) AS month_collected,
+               COUNT(*) FILTER (WHERE c.collected_at >= ${startDate} AND c.collected_at < ${endExcl}) AS collections_count
           FROM collections c
           JOIN customers cust ON cust.id = c.customer_id
          WHERE cust.organization_id = CAST(${orgId} AS uuid)
            AND c.status <> 'reversed'
-           AND c.collected_at < ${endExclusive}
+           AND c.collected_at < ${endExcl}
          GROUP BY c.collector_id
       ),
       promise_stats AS (
@@ -501,11 +628,11 @@ export class ExportService {
                COALESCE(ps.fulfilled_count, 0) AS fulfilled_count,
                COALESCE(bs.outstanding_balance, 0) AS outstanding_balance,
                CASE WHEN COALESCE(ps.promise_count, 0) > 0
-                  THEN (COALESCE(ps.fulfilled_count, 0)::numeric / ps.promise_count * 100)
+                  THEN (COALESCE(ps.fulfilled_count, 0)::numeric / ps.promise_count)
                   ELSE 0 END AS fulfillment_rate,
                CASE WHEN COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0) > 0
                   THEN (COALESCE(cst.month_collected, 0)::numeric /
-                        NULLIF(COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0), 0) * 100)
+                        NULLIF(COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0), 0))
                   ELSE 0 END AS collection_rate
           FROM collector_stats cs
           LEFT JOIN collection_stats cst ON cst.collector_id = cs.collector_id
@@ -523,35 +650,67 @@ export class ExportService {
       outstanding_balance: Decimal; fulfillment_rate: number; collection_rate: number;
     }>>(baseQuery);
 
-    const resultRows = items.map((r) => [
-      r.collector,
-      Number(r.customer_count),
-      toNum(r.today_collected),
-      toNum(r.week_collected),
-      toNum(r.month_collected),
-      Number(r.collections_count),
-      toNum(r.outstanding_balance),
-      `${Number(r.fulfillment_rate ?? 0).toFixed(1)}%`,
-      `${Number(r.collection_rate ?? 0).toFixed(1)}%`,
-    ]);
+    const sheet: SheetData = {
+      name: 'أداء المحصلين',
+      headers: [
+        'المحصل', 'العملاء', 'اليوم', 'الأسبوع', 'الشهر',
+        'عدد التحصيلات', 'الرصيد المتبقي', 'نسبة الوفاء', 'نسبة التحصيل',
+      ],
+      columnFormats: [
+        'text', 'integer', 'currency', 'currency', 'currency',
+        'integer', 'currency', 'percent', 'percent',
+      ],
+      rows: items.map((r) => [
+        r.collector,
+        Number(r.customer_count),
+        toNum(r.today_collected),
+        toNum(r.week_collected),
+        toNum(r.month_collected),
+        Number(r.collections_count),
+        toNum(r.outstanding_balance),
+        Number(r.fulfillment_rate ?? 0),
+        Number(r.collection_rate ?? 0),
+      ]),
+    };
 
-    const sheets: SheetData[] = [
-      {
-        name: 'أداء المحصلين',
-        headers: [
-          'المحصل', 'العملاء', 'اليوم', 'الأسبوع', 'الشهر',
-          'عدد التحصيلات', 'الرصيد المتبقي', 'نسبة الوفاء', 'نسبة التحصيل',
-        ],
-        rows: resultRows,
-      },
-    ];
-
-    return { sheets, rows: resultRows };
+    return this.buildResult([sheet]);
   }
-}
 
-interface SheetData {
-  name: string;
-  headers: string[];
-  rows: unknown[][];
+  /* ======================== HELPERS ======================== */
+
+  private buildResult(sheets: SheetData[]): { sheets: SheetData[]; rows: { _sheet: string; _values: unknown[] }[] } {
+    const rows: { _sheet: string; _values: unknown[] }[] = [];
+    for (const sheet of sheets) {
+      for (const row of sheet.rows) {
+        rows.push({ _sheet: sheet.name, _values: row });
+      }
+    }
+    return { sheets, rows };
+  }
+
+  private computeColumnWidths(sheet: SheetData): number[] {
+    const widths: number[] = [];
+    for (let ci = 0; ci < sheet.headers.length; ci++) {
+      let maxLen = sheet.headers[ci].length * 1.5;
+      for (const row of sheet.rows) {
+        const val = row[ci];
+        const len = (val?.toString() ?? '').length * 1.5;
+        maxLen = Math.max(maxLen, len);
+      }
+      widths.push(Math.min(maxLen + 2, 50));
+    }
+    return widths;
+  }
+
+  private fileNameFor(
+    dto: ExportExecutiveDto | ExportAgingDto | ExportAgingDetailDto | ExportCollectorsDto,
+  ): string {
+    const names: Record<string, string> = {
+      executive: 'التقارير_التنفيذية',
+      aging: 'أعمار_الديون',
+      'aging-detail': 'تفصيل_أعمار_الديون',
+      collectors: 'أداء_المحصلين',
+    };
+    return `${names[dto.report] ?? dto.report}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  }
 }

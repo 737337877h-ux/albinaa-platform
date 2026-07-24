@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Res, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -15,13 +15,6 @@ import {
   ReportFiltersDto,
   UnfollowedQueryDto,
 } from './dto/reports.dto';
-import {
-  ExportExecutiveDto,
-  ExportAgingDto,
-  ExportAgingDetailDto,
-  ExportCollectorsDto,
-  ExportDto,
-} from './dto/export.dto';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -118,12 +111,24 @@ export class ReportsController {
 
   @Post('export')
   @RequirePermissions('reports.executive')
+  @UsePipes(new ValidationPipe({ whitelist: false, transform: false }))
   @ApiOperation({ summary: 'تصدير تقرير Excel' })
   async exportReport(
     @CurrentUser() user: AuthUser,
-    @Body() body: ExportDto,
+    @Body() body: Record<string, unknown>,
     @Res() res: Response,
   ) {
-    return this.exportService.exportToExcel(user, body, res);
+    try {
+      await this.exportService.exportToExcel(user, body, res);
+    } catch (err: any) {
+      const status = err.status ?? err.statusCode ?? 500;
+      if (!res.headersSent) {
+        res.status(status).json({
+          statusCode: status,
+          error: status === 400 ? 'Bad Request' : 'Internal Server Error',
+          message: err.message ?? 'خطأ داخلي في الخادم',
+        });
+      }
+    }
   }
 }
