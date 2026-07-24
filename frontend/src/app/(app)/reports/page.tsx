@@ -1,16 +1,17 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { Bar, Doughnut, Pie } from 'react-chartjs-2';
+import { Bar, Doughnut } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement,
   Tooltip, Legend,
 } from 'chart.js';
 import { api } from '@/lib/api';
 import { useCan } from '@/lib/auth';
-import { fmtMoney, fmtDate, CCY_AR, PROMISE_STATUS_AR } from '@/lib/format';
+import { CCY_AR, PROMISE_STATUS_AR } from '@/lib/format';
 import { PageHeader } from '@/components/app-shell';
-import { Button, Card, CardHeader, Select, Field, Badge, Money, Skeleton } from '@/components/ui/primitives';
+import { Button, Card, CardHeader, Badge, Money, Skeleton } from '@/components/ui/primitives';
 import { Table, THead, TRow, TD } from '@/components/ui/table';
 import { DataState, PermissionNotice } from '@/components/ui/data-state';
 
@@ -22,6 +23,24 @@ interface FilterState {
   branchId: string;
   currency: string;
   customerStatus: string;
+}
+
+interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+function readFilters(sp: URLSearchParams): FilterState {
+  return {
+    from: sp.get('from') ?? '',
+    to: sp.get('to') ?? '',
+    branchId: sp.get('branchId') ?? '',
+    currency: sp.get('currency') ?? '',
+    customerStatus: sp.get('customerStatus') ?? 'all',
+  };
 }
 
 function buildParams(f: FilterState) {
@@ -37,12 +56,23 @@ function buildParams(f: FilterState) {
 export default function ReportsPage() {
   const can = useCan();
   const canExec = can('reports.executive');
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
-  const [filters, setFilters] = useState<FilterState>({
-    from: '', to: '', branchId: '', currency: '', customerStatus: 'all',
-  });
-
+  const filters = useMemo(() => readFilters(searchParams), [searchParams]);
   const fp = useMemo(() => buildParams(filters), [filters]);
+
+  const setFilter = useCallback((key: keyof FilterState, value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value && value !== 'all') next.set(key, value);
+    else next.delete(key);
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  }, [router, pathname, searchParams]);
+
+  const clearFilters = useCallback(() => {
+    router.replace(pathname, { scroll: false });
+  }, [router, pathname]);
 
   const kpis = useQuery({
     queryKey: ['r-kpis', fp],
@@ -58,7 +88,7 @@ export default function ReportsPage() {
 
   const debtByBranch = useQuery({
     queryKey: ['r-debt-branch', fp],
-    queryFn: () => api<any[]>(`/reports/executive/debt-by-branch`),
+    queryFn: () => api<any[]>(`/reports/executive/debt-by-branch?${fp}`),
     enabled: canExec,
   });
 
@@ -92,9 +122,11 @@ export default function ReportsPage() {
     enabled: canExec,
   });
 
+  const [unfollowedPage, setUnfollowedPage] = useState(1);
+
   const unfollowed = useQuery({
-    queryKey: ['r-unfollowed'],
-    queryFn: () => api<any[]>(`/reports/executive/unfollowed-customers`),
+    queryKey: ['r-unfollowed', fp, unfollowedPage],
+    queryFn: () => api<PaginatedResponse<{ id: string; name: string; code: string }>>(`/reports/executive/unfollowed-customers?${fp}${fp ? '&' : ''}page=${unfollowedPage}&limit=20`),
     enabled: canExec,
   });
 
@@ -114,6 +146,7 @@ export default function ReportsPage() {
   }
 
   const d = kpis.data;
+  const hasFilters = !!(filters.from || filters.to || filters.branchId || filters.currency || filters.customerStatus !== 'all');
 
   return (
     <div className="space-y-6">
@@ -123,17 +156,17 @@ export default function ReportsPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end flex-wrap">
           <div className="min-w-[10rem]">
             <label className="mb-1 block text-xs text-concrete-500">من تاريخ</label>
-            <input type="date" value={filters.from} onChange={(e) => setFilters((p) => ({ ...p, from: e.target.value }))}
+            <input type="date" value={filters.from} onChange={(e) => setFilter('from', e.target.value)}
               className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800" />
           </div>
           <div className="min-w-[10rem]">
             <label className="mb-1 block text-xs text-concrete-500">إلى تاريخ</label>
-            <input type="date" value={filters.to} onChange={(e) => setFilters((p) => ({ ...p, to: e.target.value }))}
+            <input type="date" value={filters.to} onChange={(e) => setFilter('to', e.target.value)}
               className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800" />
           </div>
           <div className="min-w-[10rem]">
             <label className="mb-1 block text-xs text-concrete-500">الفرع</label>
-            <select value={filters.branchId} onChange={(e) => setFilters((p) => ({ ...p, branchId: e.target.value }))}
+            <select value={filters.branchId} onChange={(e) => setFilter('branchId', e.target.value)}
               className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800">
               <option value="">جميع الفروع</option>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
@@ -141,7 +174,7 @@ export default function ReportsPage() {
           </div>
           <div className="min-w-[8rem]">
             <label className="mb-1 block text-xs text-concrete-500">العملة</label>
-            <select value={filters.currency} onChange={(e) => setFilters((p) => ({ ...p, currency: e.target.value }))}
+            <select value={filters.currency} onChange={(e) => setFilter('currency', e.target.value)}
               className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800">
               <option value="">جميع العملات</option>
               {Object.entries(CCY_AR).map(([k, v]) => <option key={k} value={k}>{k} — {v}</option>)}
@@ -149,17 +182,15 @@ export default function ReportsPage() {
           </div>
           <div className="min-w-[8rem]">
             <label className="mb-1 block text-xs text-concrete-500">حالة العميل</label>
-            <select value={filters.customerStatus} onChange={(e) => setFilters((p) => ({ ...p, customerStatus: e.target.value }))}
+            <select value={filters.customerStatus} onChange={(e) => setFilter('customerStatus', e.target.value)}
               className="w-full rounded-lg border border-concrete-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-iron-800">
               <option value="all">الكل</option>
               <option value="active">نشط</option>
               <option value="inactive">غير نشط</option>
             </select>
           </div>
-          {(filters.from || filters.to || filters.branchId || filters.currency || filters.customerStatus !== 'all') && (
-            <Button variant="ghost" onClick={() => setFilters({ from: '', to: '', branchId: '', currency: '', customerStatus: 'all' })}>
-              مسح الفلاتر
-            </Button>
+          {hasFilters && (
+            <Button variant="ghost" onClick={clearFilters}>مسح الفلاتر</Button>
           )}
         </div>
       </Card>
@@ -368,14 +399,14 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {unfollowed.data && unfollowed.data.length > 0 && (
+      {unfollowed.data && unfollowed.data.items.length > 0 && (
         <Card>
-          <CardHeader title="عملاء بدون متابعة" action={<Badge tone="hazard">{unfollowed.data.length}</Badge>} />
+          <CardHeader title="عملاء بدون متابعة" action={<Badge tone="hazard">{unfollowed.data.total}</Badge>} />
           <div className="p-4">
             <Table>
               <THead cols={['الاسم', 'الكود']} />
               <tbody>
-                {unfollowed.data.map((c: any) => (
+                {unfollowed.data.items.map((c) => (
                   <TRow key={c.id}>
                     <TD className="font-medium">{c.name}</TD>
                     <TD className="tnum text-concrete-500">{c.code}</TD>
@@ -383,6 +414,17 @@ export default function ReportsPage() {
                 ))}
               </tbody>
             </Table>
+            {unfollowed.data.totalPages > 1 && (
+              <div className="mt-3 flex items-center justify-between text-xs text-concrete-500">
+                <span>صفحة {unfollowed.data.page} / {unfollowed.data.totalPages}</span>
+                <div className="flex gap-2">
+                  <Button variant="ghost" disabled={unfollowed.data.page <= 1}
+                    onClick={() => setUnfollowedPage((p) => Math.max(1, p - 1))}>السابق</Button>
+                  <Button variant="ghost" disabled={unfollowed.data.page >= unfollowed.data.totalPages}
+                    onClick={() => setUnfollowedPage((p) => p + 1)}>التالي</Button>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       )}

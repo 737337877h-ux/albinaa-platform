@@ -8,8 +8,10 @@ import {
   AgingQueryDto,
   CollectionsQueryDto,
   CollectorsPerformanceQueryDto,
+  DebtByBranchQueryDto,
   ExportReportDto,
   ReportFiltersDto,
+  UnfollowedQueryDto,
 } from './dto/reports.dto';
 
 @ApiTags('Reports')
@@ -35,8 +37,8 @@ export class ReportsController {
   @Get('executive/debt-by-branch')
   @RequirePermissions('reports.executive')
   @ApiOperation({ summary: 'توزيع المديونية حسب الفروع' })
-  debtByBranch(@CurrentUser() user: AuthUser) {
-    return this.reports.debtByBranch(user);
+  debtByBranch(@CurrentUser() user: AuthUser, @Query() query: DebtByBranchQueryDto) {
+    return this.reports.debtByBranch(user, query);
   }
 
   @Get('executive/customers-collection-state')
@@ -83,9 +85,9 @@ export class ReportsController {
 
   @Get('executive/unfollowed-customers')
   @RequirePermissions('reports.executive')
-  @ApiOperation({ summary: 'عملاء بدون متابعة' })
-  unfollowedCustomers(@CurrentUser() user: AuthUser) {
-    return this.reports.unfollowedCustomers(user);
+  @ApiOperation({ summary: 'عملاء بدون متابعة (مع pagination)' })
+  unfollowedCustomers(@CurrentUser() user: AuthUser, @Query() query: UnfollowedQueryDto) {
+    return this.reports.unfollowedCustomers(user, query);
   }
 
   @Post('export')

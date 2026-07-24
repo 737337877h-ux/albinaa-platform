@@ -6,8 +6,10 @@ import {
   AgingQueryDto,
   CollectionsQueryDto,
   CollectorsPerformanceQueryDto,
+  DebtByBranchQueryDto,
   ExportReportDto,
   ReportFiltersDto,
+  UnfollowedQueryDto,
 } from './dto/reports.dto';
 
 type Decimal = Prisma.Decimal;
@@ -33,40 +35,98 @@ function endOfToday(): Date {
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private baseCustomerWhere(orgId: string): Prisma.Sql {
-    return Prisma.sql`c.organization_id = CAST(${orgId} AS uuid)`;
+  private eqUuid(alias: string, col: string, val: string): Prisma.Sql {
+    return Prisma.sql`${Prisma.raw(`${alias}.${col}`)} = CAST(${val} AS uuid)`;
   }
 
-  private baseCollectionWhere(orgId: string): Prisma.Sql {
-    return Prisma.sql`cust.organization_id = CAST(${orgId} AS uuid) AND c.status <> 'reversed'`;
+  private eqStr(alias: string, col: string, val: string): Prisma.Sql {
+    return Prisma.sql`${Prisma.raw(`${alias}.${col}`)} = ${val}`;
   }
 
-  private basePromiseWhere(orgId: string): Prisma.Sql {
-    return Prisma.sql`cust.organization_id = CAST(${orgId} AS uuid)`;
+  private ltDate(alias: string, col: string, val: Date): Prisma.Sql {
+    return Prisma.sql`${Prisma.raw(`${alias}.${col}`)} < ${val}`;
   }
 
-  private addFilters(base: Prisma.Sql, filters: ReportFiltersDto, alias: 'cust' | 'c'): Prisma.Sql {
-    const parts: Prisma.Sql[] = [base];
-    if (filters.branchId) {
-      parts.push(Prisma.sql`AND ${Prisma.raw(alias)}.branch_id = CAST(${filters.branchId} AS uuid)`);
+  private gteDate(alias: string, col: string, val: Date): Prisma.Sql {
+    return Prisma.sql`${Prisma.raw(`${alias}.${col}`)} >= ${val}`;
+  }
+
+  private joinFilters(base: Prisma.Sql, filters: Prisma.Sql[]): Prisma.Sql {
+    if (filters.length === 0) return base;
+    return Prisma.join([base, ...filters], ' ');
+  }
+
+  private sqlJoin(parts: Prisma.Sql[], sep: string = ' '): Prisma.Sql {
+    if (parts.length === 0) return Prisma.empty;
+    if (parts.length === 1) return parts[0];
+    return Prisma.join(parts, sep);
+  }
+
+  private customerFilters(alias: string, f: ReportFiltersDto): Prisma.Sql[] {
+    const parts: Prisma.Sql[] = [];
+    if (f.branchId) {
+      parts.push(Prisma.sql`AND ${this.eqUuid(alias, 'branch_id', f.branchId)}`);
     }
-    if (filters.collectorId) {
-      parts.push(Prisma.sql`AND c.collector_id = CAST(${filters.collectorId} AS uuid)`);
+    if (f.customerStatus && f.customerStatus !== 'all') {
+      parts.push(Prisma.sql`AND ${this.eqStr(alias, 'status', f.customerStatus)}`);
     }
-    if (filters.currency) {
-      parts.push(Prisma.sql`AND c.currency_code = ${filters.currency}`);
+    return parts;
+  }
+
+  private collectionFilters(f: ReportFiltersDto): Prisma.Sql[] {
+    const parts: Prisma.Sql[] = [];
+    if (f.branchId) {
+      parts.push(Prisma.sql`AND ${this.eqUuid('cust', 'branch_id', f.branchId)}`);
     }
-    if (filters.customerStatus && filters.customerStatus !== 'all') {
-      parts.push(Prisma.sql`AND ${Prisma.raw(alias)}.status = ${filters.customerStatus}`);
+    if (f.collectorId) {
+      parts.push(Prisma.sql`AND ${this.eqUuid('c', 'collector_id', f.collectorId)}`);
     }
-    return Prisma.join(parts, ' ');
+    if (f.currency) {
+      parts.push(Prisma.sql`AND ${this.eqStr('c', 'currency_code', f.currency)}`);
+    }
+    if (f.customerStatus && f.customerStatus !== 'all') {
+      parts.push(Prisma.sql`AND ${this.eqStr('cust', 'status', f.customerStatus)}`);
+    }
+    return parts;
+  }
+
+  private balanceFilters(f: ReportFiltersDto): Prisma.Sql[] {
+    const parts: Prisma.Sql[] = [];
+    if (f.branchId) {
+      parts.push(Prisma.sql`AND ${this.eqUuid('cust', 'branch_id', f.branchId)}`);
+    }
+    if (f.currency) {
+      parts.push(Prisma.sql`AND ${this.eqStr('cb', 'currency_code', f.currency)}`);
+    }
+    if (f.customerStatus && f.customerStatus !== 'all') {
+      parts.push(Prisma.sql`AND ${this.eqStr('cust', 'status', f.customerStatus)}`);
+    }
+    return parts;
+  }
+
+  private promiseFilters(f: ReportFiltersDto): Prisma.Sql[] {
+    const parts: Prisma.Sql[] = [];
+    if (f.branchId) {
+      parts.push(Prisma.sql`AND ${this.eqUuid('cust', 'branch_id', f.branchId)}`);
+    }
+    if (f.collectorId) {
+      parts.push(Prisma.sql`AND ${this.eqUuid('p', 'collector_id', f.collectorId)}`);
+    }
+    if (f.currency) {
+      parts.push(Prisma.sql`AND ${this.eqStr('p', 'currency_code', f.currency)}`);
+    }
+    if (f.customerStatus && f.customerStatus !== 'all') {
+      parts.push(Prisma.sql`AND ${this.eqStr('cust', 'status', f.customerStatus)}`);
+    }
+    return parts;
   }
 
   async kpis(user: AuthUser, query: ReportFiltersDto) {
     const orgId = user.organizationId;
-    const cw = this.addFilters(this.baseCustomerWhere(orgId), query, 'c');
-    const clw = this.addFilters(this.baseCollectionWhere(orgId), query, 'cust');
-    const pw = this.addFilters(this.basePromiseWhere(orgId), query, 'cust');
+    const cf = this.customerFilters('c', query);
+    const bf = this.balanceFilters(query);
+    const clF = this.collectionFilters(query);
+    const pf = this.promiseFilters(query);
 
     const [totalCustomers, activeCustomers, debtByCurrency, totalCollectedRow, promisesCount, overduePromises, followupsToday, debtorsCreditors] =
       await Promise.all([
@@ -81,29 +141,33 @@ export class ReportsService {
           SELECT cb.currency_code,
                  COALESCE(SUM(CASE WHEN cb.accounting_balance > 0 THEN cb.accounting_balance ELSE 0 END), 0) AS total_debt
             FROM customer_balances cb
-            JOIN customers c ON c.id = cb.customer_id
-           WHERE ${cw}
+            JOIN customers cust ON cust.id = cb.customer_id
+           WHERE cust.organization_id = CAST(${orgId} AS uuid)
+             ${this.sqlJoin(this.balanceFilters(query))}
            GROUP BY cb.currency_code
         `,
         this.prisma.$queryRaw<Array<{ total_collected: Decimal }>>`
           SELECT COALESCE(SUM(c.amount), 0) AS total_collected
             FROM collections c
             JOIN customers cust ON cust.id = c.customer_id
-           WHERE ${clw}
+           WHERE cust.organization_id = CAST(${orgId} AS uuid) AND c.status <> 'reversed'
+             ${this.sqlJoin(this.collectionFilters(query))}
         `,
         this.prisma.$queryRaw<Array<{ count: bigint }>>`
           SELECT COUNT(*) AS count
             FROM payment_promises p
             JOIN customers cust ON cust.id = p.customer_id
-           WHERE ${pw}
+           WHERE cust.organization_id = CAST(${orgId} AS uuid)
+             ${this.sqlJoin(this.promiseFilters(query))}
         `,
         this.prisma.$queryRaw<Array<{ count: bigint }>>`
           SELECT COUNT(*) AS count
             FROM payment_promises p
             JOIN customers cust ON cust.id = p.customer_id
-           WHERE ${pw}
+           WHERE cust.organization_id = CAST(${orgId} AS uuid)
              AND p.due_date < CURRENT_DATE
              AND p.status IN ('upcoming', 'due_today', 'partially_fulfilled')
+             ${this.sqlJoin(this.promiseFilters(query))}
         `,
         this.prisma.followup.count({
           where: {
@@ -152,7 +216,7 @@ export class ReportsService {
 
   async collections(user: AuthUser, query: CollectionsQueryDto) {
     const orgId = user.organizationId;
-    const clw = this.addFilters(this.baseCollectionWhere(orgId), query, 'cust');
+    const clF = this.collectionFilters(query);
 
     const endDate = query.to ? new Date(query.to) : new Date();
     const startDate = query.from ? new Date(query.from) : new Date(endDate.getFullYear(), endDate.getMonth() - 11, 1);
@@ -169,7 +233,8 @@ export class ReportsService {
              COALESCE(SUM(c.amount), 0) AS total
         FROM collections c
         JOIN customers cust ON cust.id = c.customer_id
-       WHERE ${clw}
+       WHERE cust.organization_id = CAST(${orgId} AS uuid) AND c.status <> 'reversed'
+         ${this.sqlJoin(clF)}
          AND c.collected_at >= ${startDate}
          AND c.collected_at <= ${endDate}
        GROUP BY 1
@@ -196,8 +261,9 @@ export class ReportsService {
     return results;
   }
 
-  async debtByBranch(user: AuthUser) {
+  async debtByBranch(user: AuthUser, query: ReportFiltersDto) {
     const orgId = user.organizationId;
+    const bf = this.balanceFilters(query);
     const rows = await this.prisma.$queryRaw<Array<{ branch: string; total: Decimal }>>`
       SELECT COALESCE(b.name, 'غير محدد') AS branch,
              COALESCE(SUM(CASE WHEN cb.accounting_balance > 0 THEN cb.accounting_balance ELSE 0 END), 0) AS total
@@ -205,6 +271,7 @@ export class ReportsService {
         JOIN customers cust ON cust.id = cb.customer_id
         LEFT JOIN branches b ON b.id = cust.branch_id
        WHERE cust.organization_id = CAST(${orgId} AS uuid)
+         ${this.sqlJoin(bf)}
        GROUP BY branch
        ORDER BY total DESC
     `;
@@ -238,9 +305,14 @@ export class ReportsService {
   async aging(user: AuthUser, query: AgingQueryDto) {
     const orgId = user.organizationId;
     const currency = query.currency ?? 'USD';
-    const branchFilter = query.branchId
-      ? Prisma.sql`AND cust.branch_id = CAST(${query.branchId} AS uuid)`
-      : Prisma.empty;
+
+    const bf: Prisma.Sql[] = [];
+    if (query.branchId) {
+      bf.push(Prisma.sql`AND ${this.eqUuid('c', 'branch_id', query.branchId)}`);
+    }
+    if (query.customerStatus && query.customerStatus !== 'all') {
+      bf.push(Prisma.sql`AND ${this.eqStr('c', 'status', query.customerStatus)}`);
+    }
 
     const buckets = await this.prisma.$queryRaw<Array<{ bucket: string; total: Decimal; customer_count: bigint }>>`
       WITH balances AS (
@@ -253,7 +325,7 @@ export class ReportsService {
           JOIN customers c ON c.id = cb.customer_id
          WHERE c.organization_id = CAST(${orgId} AS uuid)
            AND cb.currency_code = ${currency}
-           ${branchFilter}
+           ${this.sqlJoin(bf)}
       )
       SELECT CASE
                WHEN accounting_balance <= 0 THEN 'settled'
@@ -364,24 +436,62 @@ export class ReportsService {
     }));
   }
 
-  async unfollowedCustomers(user: AuthUser) {
+  async unfollowedCustomers(user: AuthUser, query: UnfollowedQueryDto) {
     const orgId = user.organizationId;
-    return this.prisma.$queryRaw<Array<{ id: string; name: string; code: string }>>`
-      SELECT c.id, c.name, c.external_customer_code AS code
-        FROM customers c
-       WHERE c.organization_id = CAST(${orgId} AS uuid)
-         AND c.status = 'active'
-         AND NOT EXISTS (
-           SELECT 1 FROM followups f WHERE f.customer_id = c.id AND f.deleted_at IS NULL
-         )
-       ORDER BY c.name
-       LIMIT 20
-    `;
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const offset = (page - 1) * limit;
+
+    const cf = this.customerFilters('c', query);
+    const dateClauses: Prisma.Sql[] = [];
+    if (query.from) {
+      dateClauses.push(Prisma.sql`AND NOT EXISTS (
+        SELECT 1 FROM followups f WHERE f.customer_id = c.id AND f.deleted_at IS NULL AND f.followup_at >= ${new Date(query.from)}
+      )`);
+    } else {
+      dateClauses.push(Prisma.sql`AND NOT EXISTS (
+        SELECT 1 FROM followups f WHERE f.customer_id = c.id AND f.deleted_at IS NULL
+      )`);
+    }
+    if (query.to) {
+      dateClauses.push(Prisma.sql`AND NOT EXISTS (
+        SELECT 1 FROM followups f WHERE f.customer_id = c.id AND f.deleted_at IS NULL AND f.followup_at <= ${new Date(query.to)}
+      )`);
+    }
+
+    const whereClauses = [...cf, ...dateClauses];
+
+    const [items, countResult] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ id: string; name: string; code: string }>>`
+        SELECT c.id, c.name, c.external_customer_code AS code
+          FROM customers c
+         WHERE c.organization_id = CAST(${orgId} AS uuid)
+           AND c.status = 'active'
+           ${this.sqlJoin(whereClauses)}
+         ORDER BY c.name
+         LIMIT ${limit} OFFSET ${offset}
+      `,
+      this.prisma.$queryRaw<Array<{ count: bigint }>>`
+        SELECT COUNT(*) AS count
+          FROM customers c
+         WHERE c.organization_id = CAST(${orgId} AS uuid)
+           AND c.status = 'active'
+           ${this.sqlJoin(whereClauses)}
+      `,
+    ]);
+
+    return {
+      items,
+      total: Number(countResult[0]?.count ?? 0),
+      page,
+      limit,
+      totalPages: Math.ceil(Number(countResult[0]?.count ?? 0) / limit),
+    };
   }
 
   async collectionsByMethod(user: AuthUser, query: ReportFiltersDto) {
     const orgId = user.organizationId;
-    const clw = this.addFilters(this.baseCollectionWhere(orgId), query, 'cust');
+    const clF = this.collectionFilters(query);
 
     const rows = await this.prisma.$queryRaw<Array<{ method: string; total: Decimal; count: bigint }>>`
       SELECT cm.name AS method,
@@ -390,7 +500,8 @@ export class ReportsService {
         FROM collections c
         JOIN customers cust ON cust.id = c.customer_id
         JOIN collection_methods cm ON cm.id = c.method_id
-       WHERE ${clw}
+       WHERE cust.organization_id = CAST(${orgId} AS uuid) AND c.status <> 'reversed'
+         ${this.sqlJoin(clF)}
        GROUP BY cm.name
        ORDER BY total DESC
     `;
@@ -399,7 +510,7 @@ export class ReportsService {
 
   async promisesByStatus(user: AuthUser, query: ReportFiltersDto) {
     const orgId = user.organizationId;
-    const pw = this.addFilters(this.basePromiseWhere(orgId), query, 'cust');
+    const pf = this.promiseFilters(query);
 
     const rows = await this.prisma.$queryRaw<Array<{ status: string; count: bigint; total: Decimal }>>`
       SELECT p.status,
@@ -407,7 +518,8 @@ export class ReportsService {
              COALESCE(SUM(p.expected_amount), 0) AS total
         FROM payment_promises p
         JOIN customers cust ON cust.id = p.customer_id
-       WHERE ${pw}
+       WHERE cust.organization_id = CAST(${orgId} AS uuid)
+         ${this.sqlJoin(pf)}
        GROUP BY p.status
        ORDER BY count DESC
     `;
@@ -416,12 +528,16 @@ export class ReportsService {
 
   async followupsSummary(user: AuthUser, query: ReportFiltersDto) {
     const orgId = user.organizationId;
-    let fw = Prisma.sql`f.customer_id = c.id AND c.organization_id = CAST(${orgId} AS uuid) AND f.deleted_at IS NULL`;
-    if (query.from) fw = Prisma.sql`${fw} AND f.followup_at >= ${new Date(query.from)}`;
-    if (query.to) fw = Prisma.sql`${fw} AND f.followup_at <= ${new Date(query.to)}`;
-    if (query.branchId) fw = Prisma.sql`${fw} AND c.branch_id = CAST(${query.branchId} AS uuid)`;
+
+    const fClauses: Prisma.Sql[] = [
+      Prisma.sql`f.deleted_at IS NULL`,
+      Prisma.sql`AND c.organization_id = CAST(${orgId} AS uuid)`,
+    ];
+    if (query.from) fClauses.push(Prisma.sql`AND f.followup_at >= ${new Date(query.from)}`);
+    if (query.to) fClauses.push(Prisma.sql`AND f.followup_at <= ${new Date(query.to)}`);
+    if (query.branchId) fClauses.push(Prisma.sql`AND c.branch_id = CAST(${query.branchId} AS uuid)`);
     if (query.collectorId) {
-      fw = Prisma.sql`${fw} AND f.user_id = (SELECT col.user_id FROM collectors col WHERE col.id = CAST(${query.collectorId} AS uuid))`;
+      fClauses.push(Prisma.sql`AND f.user_id = (SELECT col.user_id FROM collectors col WHERE col.id = CAST(${query.collectorId} AS uuid))`);
     }
 
     const [byType, byResult, upcoming, overdue] = await Promise.all([
@@ -430,7 +546,7 @@ export class ReportsService {
           FROM followups f
           JOIN customers c ON c.id = f.customer_id
           JOIN followup_types ft ON ft.id = f.type_id
-         WHERE ${fw}
+         WHERE ${this.sqlJoin(fClauses)}
          GROUP BY ft.name ORDER BY count DESC
       `,
       this.prisma.$queryRaw<Array<{ result: string; count: bigint }>>`
@@ -438,7 +554,7 @@ export class ReportsService {
           FROM followups f
           JOIN customers c ON c.id = f.customer_id
           JOIN followup_results fr ON fr.id = f.result_id
-         WHERE ${fw}
+         WHERE ${this.sqlJoin(fClauses)}
          GROUP BY fr.name ORDER BY count DESC
       `,
       this.prisma.followup.count({

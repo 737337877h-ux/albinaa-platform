@@ -34,15 +34,7 @@ export class CollectionsQueryDto extends ReportFiltersDto {
   groupBy?: 'day' | 'week' | 'month';
 }
 
-export class AgingQueryDto {
-  @ApiPropertyOptional({ description: 'رمز العملة ISO 4217', default: 'USD' })
-  @IsOptional() @IsString()
-  currency?: string;
-
-  @ApiPropertyOptional({ description: 'معرف الفرع' })
-  @IsOptional() @IsUUID()
-  branchId?: string;
-}
+export class AgingQueryDto extends ReportFiltersDto {}
 
 export class CollectorsPerformanceQueryDto {
   @ApiPropertyOptional({ description: 'من تاريخ (ISO Date)' })
@@ -61,6 +53,18 @@ export class CollectorsPerformanceQueryDto {
   @IsOptional() @Type(() => Number) @Min(1) @Max(100)
   limit?: number;
 }
+
+export class UnfollowedQueryDto extends ReportFiltersDto {
+  @ApiPropertyOptional({ description: 'صفحة النتائج', default: 1 })
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
+  page?: number;
+
+  @ApiPropertyOptional({ description: 'عدد العناصر لكل صفحة', default: 20, maximum: 100 })
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
+  limit?: number;
+}
+
+export class DebtByBranchQueryDto extends ReportFiltersDto {}
 
 export class ExportReportDto {
   @ApiPropertyOptional({ enum: ['kpis', 'collections', 'aging', 'collectors', 'promises', 'followups'], default: 'kpis' })
