@@ -268,7 +268,7 @@ export class ExportService {
           JOIN customers c ON c.id = cb.customer_id
          WHERE c.organization_id = CAST(${orgId} AS uuid)
            AND cb.currency_code = ${currency}
-           ${Prisma.join(bf)}
+            ${bf.length > 0 ? Prisma.join(bf) : Prisma.empty}
       )
       SELECT CASE
                WHEN accounting_balance <= 0 THEN 'settled'
