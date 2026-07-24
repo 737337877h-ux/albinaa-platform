@@ -557,9 +557,8 @@ export class ReportsService {
     const toRaw = query.to ?? new Date().toISOString().slice(0, 10);
     const fromRaw = query.from ?? new Date(new Date(toRaw).getFullYear(), new Date(toRaw).getMonth() - 2, 1).toISOString().slice(0, 10);
     const startDate = new Date(fromRaw);
-    const endDate = new Date(toRaw);
-    endDate.setDate(endDate.getDate() + 1);
-    const endExclusive = endDate;
+    const endDateInclusive = new Date(toRaw);
+    const endExclusive = new Date(toRaw); endExclusive.setDate(endExclusive.getDate() + 1);
     const weekStart = (() => { const d = new Date(); const day = d.getDay(); const diff = d.getDate() - day + (day === 0 ? -6 : 1); return new Date(d.setDate(diff)); })();
     const todayEnd = new Date(); todayEnd.setHours(0, 0, 0, 0); todayEnd.setDate(todayEnd.getDate() + 1);
     const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
@@ -623,7 +622,7 @@ export class ReportsService {
           FROM payment_promises p
           JOIN customers cust ON cust.id = p.customer_id
          WHERE cust.organization_id = CAST(${orgId} AS uuid)
-           AND p.promise_date >= ${startDate} AND p.promise_date <= ${endDate}
+           AND p.promise_date >= ${startDate} AND p.promise_date <= ${endDateInclusive}
          GROUP BY p.collector_id
       ),
       followup_stats AS (
