@@ -8,6 +8,7 @@ const LABELS: Record<string, string> = {
   dashboard: 'لوحة التحكم',
   reports: 'التقارير',
   aging: 'أعمار الديون',
+  collectors: 'أداء المحصلين',
   customers: 'العملاء',
   followups: 'المتابعات',
   promises: 'وعود السداد',
