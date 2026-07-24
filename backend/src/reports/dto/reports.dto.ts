@@ -1,89 +1,79 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsDateString, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
-export class KpisQueryDto {
-  @ApiPropertyOptional({ enum: ['today', 'week', 'month', 'custom'], default: 'today' })
-  @IsOptional()
-  @IsIn(['today', 'week', 'month', 'custom'])
-  range?: 'today' | 'week' | 'month' | 'custom';
-
-  @ApiPropertyOptional({ description: 'مطلوب عند range=custom (ISO Date)' })
-  @IsOptional()
-  @IsDateString()
-  from?: string;
-
-  @ApiPropertyOptional({ description: 'مطلوب عند range=custom (ISO Date)' })
-  @IsOptional()
-  @IsDateString()
-  to?: string;
-}
-
-export class CollectionsQueryDto {
+export class ReportFiltersDto {
   @ApiPropertyOptional({ description: 'من تاريخ (ISO Date)' })
-  @IsOptional()
-  @IsDateString()
+  @IsOptional() @IsDateString()
   from?: string;
 
   @ApiPropertyOptional({ description: 'إلى تاريخ (ISO Date)' })
-  @IsOptional()
-  @IsDateString()
+  @IsOptional() @IsDateString()
   to?: string;
 
-  @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'day' })
-  @IsOptional()
-  @IsIn(['day', 'week', 'month'])
-  groupBy?: 'day' | 'week' | 'month';
+  @ApiPropertyOptional({ description: 'معرف الفرع' })
+  @IsOptional() @IsUUID()
+  branchId?: string;
+
+  @ApiPropertyOptional({ description: 'معرف المحصل' })
+  @IsOptional() @IsUUID()
+  collectorId?: string;
 
   @ApiPropertyOptional({ description: 'رمز العملة ISO 4217' })
-  @IsOptional()
-  @IsString()
+  @IsOptional() @IsString()
   currency?: string;
+
+  @ApiPropertyOptional({ enum: ['active', 'inactive', 'all'], default: 'all' })
+  @IsOptional() @IsIn(['active', 'inactive', 'all'])
+  customerStatus?: 'active' | 'inactive' | 'all';
 }
 
-export class AgingQueryDto {
-  @ApiPropertyOptional({ description: 'رمز العملة ISO 4217', default: 'USD' })
-  @IsOptional()
-  @IsString()
-  currency?: string;
+export class CollectionsQueryDto extends ReportFiltersDto {
+  @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'month' })
+  @IsOptional() @IsIn(['day', 'week', 'month'])
+  groupBy?: 'day' | 'week' | 'month';
 }
+
+export class AgingQueryDto extends ReportFiltersDto {}
 
 export class CollectorsPerformanceQueryDto {
   @ApiPropertyOptional({ description: 'من تاريخ (ISO Date)' })
-  @IsOptional()
-  @IsDateString()
+  @IsOptional() @IsDateString()
   from?: string;
 
   @ApiPropertyOptional({ description: 'إلى تاريخ (ISO Date)' })
-  @IsOptional()
-  @IsDateString()
+  @IsOptional() @IsDateString()
   to?: string;
 
   @ApiPropertyOptional({ description: 'صفحة النتائج', default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
   page?: number;
 
   @ApiPropertyOptional({ description: 'عدد العناصر لكل صفحة', default: 25, maximum: 100 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(100)
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
   limit?: number;
 }
 
+export class UnfollowedQueryDto extends ReportFiltersDto {
+  @ApiPropertyOptional({ description: 'صفحة النتائج', default: 1 })
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
+  page?: number;
+
+  @ApiPropertyOptional({ description: 'عدد العناصر لكل صفحة', default: 20, maximum: 100 })
+  @IsOptional() @Type(() => Number) @Min(1) @Max(100)
+  limit?: number;
+}
+
+export class DebtByBranchQueryDto extends ReportFiltersDto {}
+
 export class ExportReportDto {
-  @ApiPropertyOptional({ enum: ['kpis', 'collections', 'aging', 'collectors'], default: 'kpis' })
+  @ApiPropertyOptional({ enum: ['kpis', 'collections', 'aging', 'collectors', 'promises', 'followups'], default: 'kpis' })
   @IsOptional()
-  @IsIn(['kpis', 'collections', 'aging', 'collectors'])
-  report!: 'kpis' | 'collections' | 'aging' | 'collectors';
+  @IsIn(['kpis', 'collections', 'aging', 'collectors', 'promises', 'followups'])
+  report!: string;
 
   @ApiPropertyOptional({ enum: ['pdf', 'xlsx'], default: 'pdf' })
-  @IsOptional()
-  @IsIn(['pdf', 'xlsx'])
+  @IsOptional() @IsIn(['pdf', 'xlsx'])
   format?: 'pdf' | 'xlsx';
 
   @ApiPropertyOptional({ description: 'معلمات إضافية للتقرير' })
@@ -91,8 +81,6 @@ export class ExportReportDto {
   params?: Record<string, unknown>;
 
   @ApiPropertyOptional({ description: 'اسم الملف المطلوب بدون الامتداد' })
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
+  @IsOptional() @IsString() @IsNotEmpty()
   fileName?: string;
 }

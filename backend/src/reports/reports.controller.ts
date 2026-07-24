@@ -4,7 +4,15 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { AuthUser } from '../common/guards/jwt-auth.guard';
 import { ReportsService } from './reports.service';
-import { KpisQueryDto, CollectionsQueryDto, AgingQueryDto, CollectorsPerformanceQueryDto, ExportReportDto } from './dto/reports.dto';
+import {
+  AgingQueryDto,
+  CollectionsQueryDto,
+  CollectorsPerformanceQueryDto,
+  DebtByBranchQueryDto,
+  ExportReportDto,
+  ReportFiltersDto,
+  UnfollowedQueryDto,
+} from './dto/reports.dto';
 
 @ApiTags('Reports')
 @ApiBearerAuth('access-token')
@@ -15,13 +23,13 @@ export class ReportsController {
   @Get('executive/kpis')
   @RequirePermissions('reports.executive')
   @ApiOperation({ summary: 'مؤشرات الأداء التنفيذية' })
-  kpis(@CurrentUser() user: AuthUser, @Query() query: KpisQueryDto) {
+  kpis(@CurrentUser() user: AuthUser, @Query() query: ReportFiltersDto) {
     return this.reports.kpis(user, query);
   }
 
   @Get('executive/collections-monthly')
   @RequirePermissions('reports.executive')
-  @ApiOperation({ summary: 'التحصيل الشهري' })
+  @ApiOperation({ summary: 'التحصيل حسب الفترة' })
   collections(@CurrentUser() user: AuthUser, @Query() query: CollectionsQueryDto) {
     return this.reports.collections(user, query);
   }
@@ -29,8 +37,8 @@ export class ReportsController {
   @Get('executive/debt-by-branch')
   @RequirePermissions('reports.executive')
   @ApiOperation({ summary: 'توزيع المديونية حسب الفروع' })
-  debtByBranch(@CurrentUser() user: AuthUser) {
-    return this.reports.debtByBranch(user);
+  debtByBranch(@CurrentUser() user: AuthUser, @Query() query: DebtByBranchQueryDto) {
+    return this.reports.debtByBranch(user, query);
   }
 
   @Get('executive/customers-collection-state')
@@ -49,9 +57,37 @@ export class ReportsController {
 
   @Get('executive/top-collectors')
   @RequirePermissions('reports.executive')
-  @ApiOperation({ summary: 'أفضل 10 محصلين حسب إجمالي التحصيل' })
+  @ApiOperation({ summary: 'أداء المحصلين' })
   collectors(@CurrentUser() user: AuthUser, @Query() query: CollectorsPerformanceQueryDto) {
     return this.reports.collectorsPerformance(user, query);
+  }
+
+  @Get('executive/collections-by-method')
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'التحصيل حسب طريقة الدفع' })
+  collectionsByMethod(@CurrentUser() user: AuthUser, @Query() query: ReportFiltersDto) {
+    return this.reports.collectionsByMethod(user, query);
+  }
+
+  @Get('executive/promises-by-status')
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'الوعود حسب الحالة' })
+  promisesByStatus(@CurrentUser() user: AuthUser, @Query() query: ReportFiltersDto) {
+    return this.reports.promisesByStatus(user, query);
+  }
+
+  @Get('executive/followups-summary')
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'ملخص المتابعات' })
+  followupsSummary(@CurrentUser() user: AuthUser, @Query() query: ReportFiltersDto) {
+    return this.reports.followupsSummary(user, query);
+  }
+
+  @Get('executive/unfollowed-customers')
+  @RequirePermissions('reports.executive')
+  @ApiOperation({ summary: 'عملاء بدون متابعة (مع pagination)' })
+  unfollowedCustomers(@CurrentUser() user: AuthUser, @Query() query: UnfollowedQueryDto) {
+    return this.reports.unfollowedCustomers(user, query);
   }
 
   @Post('export')
