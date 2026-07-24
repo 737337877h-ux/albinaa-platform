@@ -557,9 +557,13 @@ export class ReportsService {
     const weekStart = (() => { const d = new Date(); const day = d.getDay(); const diff = d.getDate() - day + (day === 0 ? -6 : 1); return new Date(d.setDate(diff)); })();
 
     const collectorWhere: Prisma.Sql[] = [
-      Prisma.sql`AND col.active = true`,
       Prisma.sql`AND u.organization_id = CAST(${orgId} AS uuid)`,
     ];
+    if (query.collectorStatus === 'active') {
+      collectorWhere.push(Prisma.sql`AND col.active = true`);
+    } else if (query.collectorStatus === 'inactive') {
+      collectorWhere.push(Prisma.sql`AND col.active = false`);
+    }
     if (query.branchId) {
       collectorWhere.push(Prisma.sql`AND col.branch_id = CAST(${query.branchId} AS uuid)`);
     }
@@ -578,8 +582,8 @@ export class ReportsService {
       fulfillment_rate: 'fulfillment_rate',
       collection_rate: 'collection_rate',
     };
-    const sortSql = Prisma.raw(sortColMap[sortBy] ?? 'month_collected');
-    const dirSql = sortDir === 'asc' ? Prisma.raw('ASC') : Prisma.raw('DESC');
+    const sortCol = sortColMap[sortBy] ?? 'month_collected';
+    const sortDirStr = sortDir === 'asc' ? 'ASC' : 'DESC';
 
     const baseQuery = Prisma.sql`
       WITH collector_stats AS (
@@ -601,7 +605,6 @@ export class ReportsService {
           JOIN customers cust ON cust.id = c.customer_id
          WHERE cust.organization_id = CAST(${orgId} AS uuid)
            AND c.status <> 'reversed'
-           AND c.collected_at >= ${weekStart}
            AND c.collected_at <= ${endDate}
          GROUP BY c.collector_id
       ),
@@ -644,11 +647,12 @@ export class ReportsService {
                COALESCE(ps.fulfilled_count, 0) AS fulfilled_count,
                COALESCE(bs.outstanding_balance, 0) AS outstanding_balance,
                CASE WHEN COALESCE(ps.promise_count, 0) > 0
-                 THEN (COALESCE(ps.fulfilled_count, 0)::numeric / ps.promise_count * 100)
-                 ELSE 0 END AS fulfillment_rate,
-               CASE WHEN cs.customer_count > 0
-                 THEN (COALESCE(cst.month_collected, 0)::numeric / cs.customer_count)
-                 ELSE 0 END AS collection_rate
+                  THEN (COALESCE(ps.fulfilled_count, 0)::numeric / ps.promise_count * 100)
+                  ELSE 0 END AS fulfillment_rate,
+               CASE WHEN COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0) > 0
+                  THEN (COALESCE(cst.month_collected, 0)::numeric /
+                        NULLIF(COALESCE(cst.month_collected, 0) + COALESCE(bs.outstanding_balance, 0), 0) * 100)
+                  ELSE 0 END AS collection_rate
           FROM collector_stats cs
           LEFT JOIN collection_stats cst ON cst.collector_id = cs.collector_id
           LEFT JOIN followup_stats fs ON fs.collector_id = cs.collector_id
@@ -658,9 +662,9 @@ export class ReportsService {
       SELECT * FROM base
     `;
 
-    const sortLimit = Prisma.sql` ORDER BY ${sortSql} ${dirSql} NULLS LAST LIMIT ${limit} OFFSET ${offset}`;
+    const sortLimit = Prisma.raw(` ORDER BY ${sortCol} ${sortDirStr} NULLS LAST LIMIT ${limit} OFFSET ${offset}`);
 
-    const [items, countResult, summaryResult] = await Promise.all([
+    const [items, countResult, summaryResult, topPerfResult] = await Promise.all([
       this.prisma.$queryRaw<unknown[]>(Prisma.sql`${baseQuery} ${sortLimit}`),
       this.prisma.$queryRaw<Array<{ count: bigint }>>(
         Prisma.sql`SELECT COUNT(*) AS count FROM (${baseQuery}) _cnt`
@@ -677,6 +681,10 @@ export class ReportsService {
                COALESCE(SUM(customer_count), 0) AS total_customers
           FROM (${baseQuery}) _sum
       `),
+      this.prisma.$queryRaw<Array<{ collector: string }>>(
+        Prisma.sql`SELECT collector FROM (${baseQuery}) _top
+          ORDER BY month_collected DESC, fulfillment_rate DESC LIMIT 1`
+      ),
     ]);
 
     const typed = items as Array<{
@@ -688,7 +696,7 @@ export class ReportsService {
     }>;
 
     const summaryRow = summaryResult[0];
-    const topPerformer = typed.length > 0 ? typed[0]?.collector : null;
+    const topPerformer = topPerfResult[0]?.collector ?? null;
 
     return {
       items: typed.map((r) => ({
